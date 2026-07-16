@@ -1,9 +1,10 @@
 #pragma once
 
-// Notes serial command family — registered with SerialCommandService.
-// TODO(task-10/18): implementation.
-
 struct Services;
-class SerialCommandService;
+class MultilineBuffer;
 
-void registerNotesCommands(SerialCommandService& serial, Services& services);
+// `notes ...` family (spec §17). Multiline verbs (new/write/append) arm the
+// shared MultilineBuffer; the dispatcher pumps subsequent lines into it.
+bool handleNotesCommand(Services& services, MultilineBuffer& multiline, const char* verb,
+                        char* args);
+void printNotesHelp();

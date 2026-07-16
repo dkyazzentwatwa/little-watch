@@ -21,6 +21,13 @@ class SdStorage {
   // allowed root; rejects "..", backslashes, control characters.
   bool sanitizePath(const char* raw, String& out) const;
 
+  // Sanitizing wrappers used by the serial file commands. Every mutation
+  // of the card from user input funnels through these.
+  bool makeDir(const char* path);
+  bool removeFile(const char* path);
+  bool renamePath(const char* from, const char* to);
+  bool copyFile(const char* from, const char* to);
+
   SdCardAdapter* card() { return card_; }
 
  private:

@@ -31,6 +31,10 @@ class NotesService {
   bool append(const char* path, const String& text);
   bool remove(const char* path);
 
+  // Renames by title: slugified filename (deck convention) in the same
+  // directory, same extension, -2/-3... on collision. Returns the new path.
+  bool rename(const char* path, const char* newTitle, String& outNewPath);
+
   bool setFavorite(const char* path, bool on);
   bool setPinned(const char* path, bool on);
   bool isFavorite(const char* path) const;

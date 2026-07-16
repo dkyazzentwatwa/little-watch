@@ -1,9 +1,8 @@
 #pragma once
 
-// Files serial command family — registered with SerialCommandService.
-// TODO(task-10/18): implementation.
-
 struct Services;
-class SerialCommandService;
 
-void registerFilesCommands(SerialCommandService& serial, Services& services);
+// `files ...` family (spec §17): list/tree/cat/mkdir/copy/move/rename/
+// delete, all path-sanitized to /littlecube and the deck interop tree.
+bool handleFilesCommand(Services& services, const char* verb, char* args);
+void printFilesHelp();

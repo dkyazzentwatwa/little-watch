@@ -265,6 +265,51 @@ bool NotesService::append(const char* path, const String& text) {
   return written == text.length();
 }
 
+bool NotesService::rename(const char* path, const char* newTitle, String& outNewPath) {
+  outNewPath = "";
+  String safe;
+  if (storage_ == nullptr || !storage_->sanitizePath(path, safe) || newTitle == nullptr) {
+    return false;
+  }
+
+  // Slugify per deck convention: lowercase alphanumerics, dashes between.
+  String slug;
+  bool pendingDash = false;
+  for (size_t i = 0; newTitle[i] != '\0' && slug.length() < 48; i++) {
+    const char c = newTitle[i];
+    if (isalnum(c)) {
+      if (pendingDash && slug.length() > 0) {
+        slug += '-';
+      }
+      pendingDash = false;
+      slug += static_cast<char>(tolower(c));
+    } else {
+      pendingDash = true;
+    }
+  }
+  if (slug.length() == 0) {
+    return false;
+  }
+
+  const int slash = safe.lastIndexOf('/');
+  const String dir = safe.substring(0, slash);
+  const int dot = safe.lastIndexOf('.');
+  const String ext = dot > slash ? safe.substring(dot) : String(".md");
+
+  String candidate = dir + "/" + slug + ext;
+  for (int n = 2; SD_MMC.exists(candidate) && n < 10; n++) {
+    candidate = dir + "/" + slug + "-" + String(n) + ext;
+  }
+  if (SD_MMC.exists(candidate)) {
+    return false;
+  }
+  if (!SD_MMC.rename(safe, candidate)) {
+    return false;
+  }
+  outNewPath = candidate;
+  return true;
+}
+
 bool NotesService::remove(const char* path) {
   String safe;
   if (storage_ == nullptr || !storage_->sanitizePath(path, safe)) {

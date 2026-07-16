@@ -72,6 +72,76 @@ bool SdStorage::ensureTree() {
   return allOk;
 }
 
+bool SdStorage::makeDir(const char* path) {
+  String safe;
+  if (!sanitizePath(path, safe) || card_ == nullptr || !card_->writable()) {
+    return false;
+  }
+  return ensureDir(safe.c_str());
+}
+
+bool SdStorage::removeFile(const char* path) {
+  String safe;
+  if (!sanitizePath(path, safe) || card_ == nullptr || !card_->writable()) {
+    return false;
+  }
+  if (SD_MMC.exists(safe)) {
+    fs::File f = SD_MMC.open(safe);
+    const bool isDir = f && f.isDirectory();
+    if (f) {
+      f.close();
+    }
+    return isDir ? SD_MMC.rmdir(safe) : SD_MMC.remove(safe);
+  }
+  return false;
+}
+
+bool SdStorage::renamePath(const char* from, const char* to) {
+  String safeFrom;
+  String safeTo;
+  if (!sanitizePath(from, safeFrom) || !sanitizePath(to, safeTo) || card_ == nullptr ||
+      !card_->writable()) {
+    return false;
+  }
+  return SD_MMC.rename(safeFrom, safeTo);
+}
+
+bool SdStorage::copyFile(const char* from, const char* to) {
+  String safeFrom;
+  String safeTo;
+  if (!sanitizePath(from, safeFrom) || !sanitizePath(to, safeTo) || card_ == nullptr ||
+      !card_->writable()) {
+    return false;
+  }
+  fs::File src = SD_MMC.open(safeFrom, FILE_READ);
+  if (!src || src.isDirectory()) {
+    if (src) {
+      src.close();
+    }
+    return false;
+  }
+  fs::File dst = SD_MMC.open(safeTo, FILE_WRITE);
+  if (!dst) {
+    src.close();
+    return false;
+  }
+  uint8_t chunk[256];
+  bool ok = true;
+  while (src.available() > 0) {
+    const size_t n = src.read(chunk, sizeof(chunk));
+    if (n == 0 || dst.write(chunk, n) != n) {
+      ok = false;
+      break;
+    }
+  }
+  src.close();
+  dst.close();
+  if (!ok) {
+    SD_MMC.remove(safeTo);
+  }
+  return ok;
+}
+
 bool SdStorage::sanitizePath(const char* raw, String& out) const {
   out = "";
   if (raw == nullptr) {
