@@ -91,6 +91,8 @@ void kernelSetup() {
   // here may block on missing Wi-Fi or a missing SD card.
   settingsService.begin();
   displayAdapter.begin();
+  displayAdapter.setBrightness(settingsService.brightness());
+  displayAdapter.splash(FIRMWARE_NAME, FIRMWARE_VERSION);
   inputAdapter.begin();
 
   sdCardAdapter.begin(&eventBus);
