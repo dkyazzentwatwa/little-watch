@@ -4,6 +4,7 @@
 
 #include "../core/Services.h"
 #include "MultilineBuffer.h"
+#include "commands/WifiCommands.h"
 
 // USB serial command interface (spec §16-§18): the cube's keyboard. Line
 // based, non-blocking, bounded buffers; commands dispatch to shared
@@ -22,6 +23,7 @@ class SerialCommandService {
 
   Services* services_ = nullptr;
   MultilineBuffer multiline_;
+  PasswordPrompt wifiPrompt_;
 
   static constexpr size_t kMaxLineLen = 256;
   char line_[kMaxLineLen];

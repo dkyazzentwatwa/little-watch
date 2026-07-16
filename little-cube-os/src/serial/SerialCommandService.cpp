@@ -32,6 +32,20 @@ void SerialCommandService::update() {
       line_[lineLen_] = '\0';
       if (overflowed_) {
         Serial.println("error: line too long (max 255 chars); ignored");
+        if (wifiPrompt_.active) {
+          wifiPrompt_.active = false;
+          Serial.println("password entry cancelled");
+        }
+      } else if (wifiPrompt_.active) {
+        // This line is a Wi-Fi password: hand it straight to the service,
+        // then destroy every copy. It is never echoed or logged.
+        wifiPrompt_.active = false;
+        Serial.println("Connecting...");
+        if (services_->wifi != nullptr) {
+          services_->wifi->connectTo(wifiPrompt_.ssid, line_, wifiPrompt_.hidden);
+        }
+        memset(line_, 0, sizeof(line_));
+        memset(wifiPrompt_.ssid, 0, sizeof(wifiPrompt_.ssid));
       } else if (multiline_.active()) {
         switch (multiline_.feedLine(line_)) {
           case MultilineBuffer::Result::Saved:
@@ -228,7 +242,16 @@ void SerialCommandService::handleLine(char* line) {
     return;
   }
 
-  if (strcmp(family, "wifi") == 0 || strcmp(family, "recordings") == 0 ||
+  if (strcmp(family, "wifi") == 0) {
+    if (verb == nullptr) {
+      printWifiHelp();
+    } else if (!handleWifiCommand(*services_, wifiPrompt_, verb, cursor)) {
+      Serial.printf("error: unknown command 'wifi %s' — try 'help wifi'\n", verb);
+    }
+    return;
+  }
+
+  if (strcmp(family, "recordings") == 0 ||
       strcmp(family, "audio") == 0 || strcmp(family, "volume") == 0 ||
       strcmp(family, "calendar") == 0 || strcmp(family, "contacts") == 0 ||
       strcmp(family, "settings") == 0) {
