@@ -5,6 +5,7 @@
 #include "../core/EventBus.h"
 #include "../core/SystemState.h"
 #include "../hardware/SdCardAdapter.h"
+#include "../services/TimeService.h"
 #include "../services/WifiService.h"
 #include "CmdArgs.h"
 #include "commands/FilesCommands.h"
@@ -162,6 +163,40 @@ void SerialCommandService::handleLine(char* line) {
   if (strcmp(family, "back") == 0 && services_->router != nullptr) {
     services_->router->back();
     Serial.printf("now: %s\n", appName(services_->router->currentId()));
+    return;
+  }
+  if (strcmp(family, "time") == 0 && services_->time != nullptr) {
+    const char* verb = cmdargs::nextToken(cursor);
+    if (verb == nullptr) {
+      struct tm t;
+      if (services_->time->now(t)) {
+        Serial.printf("%04d-%02d-%02d %02d:%02d:%02d%s\n", t.tm_year + 1900, t.tm_mon + 1,
+                      t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec,
+                      services_->time->valid() ? "" : " (not set)");
+      } else {
+        Serial.println("RTC unavailable");
+      }
+      return;
+    }
+    if (strcmp(verb, "set") == 0) {
+      const char* date = cmdargs::nextToken(cursor);
+      const char* clock = cmdargs::nextToken(cursor);
+      struct tm t = {};
+      int sec = 0;
+      if (date == nullptr || clock == nullptr ||
+          sscanf(date, "%d-%d-%d", &t.tm_year, &t.tm_mon, &t.tm_mday) != 3 ||
+          sscanf(clock, "%d:%d:%d", &t.tm_hour, &t.tm_min, &sec) < 2) {
+        Serial.println("usage: time set YYYY-MM-DD HH:MM[:SS]");
+        return;
+      }
+      t.tm_year -= 1900;
+      t.tm_mon -= 1;
+      t.tm_sec = sec;
+      mktime(&t);  // normalizes and fills tm_wday
+      Serial.println(services_->time->setManual(t) ? "time set" : "error: RTC write failed");
+      return;
+    }
+    Serial.println("usage: time · time set YYYY-MM-DD HH:MM[:SS]");
     return;
   }
 
