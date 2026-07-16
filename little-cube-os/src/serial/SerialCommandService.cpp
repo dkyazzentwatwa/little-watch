@@ -1,6 +1,7 @@
 #include "SerialCommandService.h"
 
 #include "../board_config.h"
+#include "../core/AppRouter.h"
 
 // TODO(task-10): full dispatcher (help/status/version/uptime/reboot +
 // notes/files/storage families), MultilineBuffer integration, then the
@@ -47,5 +48,29 @@ void SerialCommandService::handleLine(char* line) {
     Serial.printf("%s %s\n", FIRMWARE_NAME, FIRMWARE_VERSION);
     return;
   }
-  Serial.println("littlecube: command interface lands in task 10; only 'version' works so far");
+
+  // Router debug command: `open <app>` / `open home` — exercises the app
+  // router from the serial console before touch UI exists on hardware.
+  if (strncmp(line, "open ", 5) == 0 && services_ != nullptr && services_->router != nullptr) {
+    const char* name = line + 5;
+    for (uint8_t i = 0; i < kAppCount; i++) {
+      const AppId id = static_cast<AppId>(i);
+      if (strcasecmp(name, appName(id)) == 0) {
+        services_->router->open(id);
+        Serial.printf("opened %s\n", appName(id));
+        return;
+      }
+    }
+    Serial.printf("error: unknown app '%s' (try: Home, Today, Clock, Weather, Calendar, Notes, "
+                  "Recorder, Audio, Files, Contacts, Calculator, Settings)\n",
+                  name);
+    return;
+  }
+  if (strcmp(line, "back") == 0 && services_ != nullptr && services_->router != nullptr) {
+    services_->router->back();
+    Serial.printf("now: %s\n", appName(services_->router->currentId()));
+    return;
+  }
+
+  Serial.println("littlecube: command interface lands in task 10; try 'version', 'open <app>', 'back'");
 }
