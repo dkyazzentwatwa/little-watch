@@ -1,6 +1,7 @@
 #include "Kernel.h"
 
 #include <Arduino.h>
+#include <LittleFS.h>
 
 #include "../apps/AppRegistry.h"
 #include "../board_config.h"
@@ -113,8 +114,9 @@ void onSystemEvent(SystemEvent event, void* /*context*/) {
   switch (event) {
     case SystemEvent::SdMounted:
       // Fresh card (or remount): make sure the content tree exists before
-      // any service touches it.
+      // any service touches it, then seed the first-boot welcome note.
       sdStorage.ensureTree();
+      notesService.seedWelcomeIfEmpty();
       break;
     default:
       break;
@@ -154,6 +156,13 @@ void kernelSetup() {
   // Boot order: settings first (brightness etc.), then display so the user
   // sees life immediately, then input, then storage and the rest. Nothing
   // here may block on missing Wi-Fi or a missing SD card.
+  // Internal flash FS first (settings flags, weather cache, recovery
+  // metadata). Format-on-fail keeps a corrupted partition from bricking
+  // boot.
+  if (!LittleFS.begin(true)) {
+    Serial.println("[fs] LittleFS unavailable");
+  }
+
   settingsService.begin();
   displayAdapter.begin();
   displayAdapter.setBrightness(settingsService.brightness());
