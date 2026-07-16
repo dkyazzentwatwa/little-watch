@@ -9,6 +9,10 @@
 // Today card, and serial `status`. Services keep this current; readers
 // never call into hardware.
 struct SystemState {
+  // Bumped whenever any field below changes; cheap dirty check for UI
+  // (apps re-render when the version moves).
+  uint32_t version = 0;
+
   char clockHhMm[6] = "--:--";
   bool timeValid = false;
 

@@ -55,6 +55,59 @@ Services services;
 AmoledProtection amoledProtection;
 
 uint32_t lastLoopMs = 0;
+uint32_t statusAccumMs = 0;
+
+// Refreshes the shared status snapshot about once a second; bumps
+// SystemState::version only when something actually changed so UI redraw
+// checks stay cheap.
+void refreshSystemState() {
+  SystemState& s = systemState;
+  bool changed = false;
+
+  char hhmm[6];
+  timeService.formatHhMm(hhmm, sizeof(hhmm));
+  if (strncmp(hhmm, s.clockHhMm, sizeof(s.clockHhMm)) != 0) {
+    strncpy(s.clockHhMm, hhmm, sizeof(s.clockHhMm) - 1);
+    s.clockHhMm[sizeof(s.clockHhMm) - 1] = '\0';
+    changed = true;
+  }
+  if (timeService.valid() != s.timeValid) {
+    s.timeValid = timeService.valid();
+    changed = true;
+  }
+
+  if (wifiService.state() != s.wifi) {
+    s.wifi = wifiService.state();
+    changed = true;
+  }
+  if (sdCardAdapter.state() != s.sd) {
+    s.sd = sdCardAdapter.state();
+    changed = true;
+  }
+  if (recorderService.recording() != s.recording) {
+    s.recording = recorderService.recording();
+    changed = true;
+  }
+  if (audioAdapter.isPlaying() != s.playingAudio) {
+    s.playingAudio = audioAdapter.isPlaying();
+    changed = true;
+  }
+
+  const bool batteryPresent = batteryAdapter.batteryPresent();
+  const int batteryPercent = batteryAdapter.percent();
+  const bool charging = batteryAdapter.charging();
+  if (batteryPresent != s.batteryPresent || batteryPercent != s.batteryPercent ||
+      charging != s.charging) {
+    s.batteryPresent = batteryPresent;
+    s.batteryPercent = batteryPercent;
+    s.charging = charging;
+    changed = true;
+  }
+
+  if (changed) {
+    s.version++;
+  }
+}
 
 void wireServices() {
   services.display = &displayAdapter;
@@ -145,6 +198,12 @@ void kernelLoop() {
     if (!amoledProtection.screenOff()) {
       appRouter.handleInput(event);
     }
+  }
+
+  statusAccumMs += deltaMs;
+  if (statusAccumMs >= 1000) {
+    statusAccumMs = 0;
+    refreshSystemState();
   }
 
   wifiService.update(deltaMs);

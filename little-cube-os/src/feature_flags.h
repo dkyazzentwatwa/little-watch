@@ -16,13 +16,11 @@
 #define FEATURE_BATTERY_MONITOR 1
 #define FEATURE_CAMERA 0
 
-// Home screen layout (spec §7). Carousel is the default; the 2x2 grid is a
-// compile-time alternative.
+// Home screen layout (spec §7). Carousel is the default; define
+// LITTLECUBE_HOME_LAYOUT_GRID to build the 2x2 grid variant instead.
 enum class HomeLayout {
   Carousel,
   Grid2x2,
 };
 
-#ifndef LITTLECUBE_HOME_LAYOUT
-#define LITTLECUBE_HOME_LAYOUT HomeLayout::Carousel
-#endif
+// #define LITTLECUBE_HOME_LAYOUT_GRID 1
