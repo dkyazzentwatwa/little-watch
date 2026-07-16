@@ -68,15 +68,22 @@ void TodayApp::render() {
       services_.weather != nullptr ? &services_.weather->snapshot() : nullptr;
   if (wx != nullptr && wx->valid) {
     char line[64];
-    const uint32_t ageMin = (millis() - wx->fetchedAtUptimeMs) / 60000UL;
     snprintf(line, sizeof(line), "%d\xF8 · %s", (int)(wx->temperatureC + 0.5f), wx->condition);
     gfx.print(line);
-    if (ageMin > 60) {
+    // Never present stale data as current (spec §11).
+    if (wx->fetchedAtUptimeMs == 0) {
       gfx.setTextColor(theme::kWarn);
-      gfx.setCursor(theme::kPadding + 200, y);
-      char age[24];
-      snprintf(age, sizeof(age), "(%luh old)", (unsigned long)(ageMin / 60));
-      gfx.print(age);
+      gfx.setCursor(theme::kPadding + 210, y);
+      gfx.print("(cached)");
+    } else {
+      const uint32_t ageMin = (millis() - wx->fetchedAtUptimeMs) / 60000UL;
+      if (ageMin > 60) {
+        gfx.setTextColor(theme::kWarn);
+        gfx.setCursor(theme::kPadding + 210, y);
+        char age[24];
+        snprintf(age, sizeof(age), "(%luh old)", (unsigned long)(ageMin / 60));
+        gfx.print(age);
+      }
     }
   } else {
     gfx.setTextColor(theme::kTextDim);
