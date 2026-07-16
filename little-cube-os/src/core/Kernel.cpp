@@ -109,6 +109,18 @@ void refreshSystemState() {
   }
 }
 
+void onSystemEvent(SystemEvent event, void* /*context*/) {
+  switch (event) {
+    case SystemEvent::SdMounted:
+      // Fresh card (or remount): make sure the content tree exists before
+      // any service touches it.
+      sdStorage.ensureTree();
+      break;
+    default:
+      break;
+  }
+}
+
 void wireServices() {
   services.display = &displayAdapter;
   services.input = &inputAdapter;
@@ -148,8 +160,11 @@ void kernelSetup() {
   displayAdapter.splash(FIRMWARE_NAME, FIRMWARE_VERSION);
   inputAdapter.begin();
 
-  sdCardAdapter.begin(&eventBus);
+  // Storage wiring and the event subscription must precede the SD begin:
+  // a successful boot mount publishes SdMounted synchronously.
   sdStorage.begin(&sdCardAdapter);
+  eventBus.subscribe(onSystemEvent, nullptr);
+  sdCardAdapter.begin(&eventBus);
 
   rtcAdapter.begin();
   batteryAdapter.begin();
