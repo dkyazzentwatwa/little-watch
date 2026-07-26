@@ -13,15 +13,24 @@ class AudioAdapter;
 
 class SdStorage;
 
+class AssistantService;
 class SettingsService;
 class WifiService;
 class ProvisioningService;
 class TimeService;
 class WeatherService;
 class NotesService;
+class CalendarService;
+class ContactsService;
 class RecorderService;
+class BookService;
+class MusicService;
+class NewsService;
+class PodcastService;
 
 class SerialCommandService;
+
+class AmoledProtection;
 
 class EventBus;
 class AppRouter;
@@ -42,10 +51,21 @@ struct Services {
   ProvisioningService* provisioning = nullptr;
   TimeService* time = nullptr;
   WeatherService* weather = nullptr;
+  NewsService* news = nullptr;
   NotesService* notes = nullptr;
+  CalendarService* calendar = nullptr;
+  ContactsService* contacts = nullptr;
   RecorderService* recorder = nullptr;
+  AssistantService* assistant = nullptr;
+  BookService* books = nullptr;
+  MusicService* music = nullptr;
+  PodcastService* podcasts = nullptr;
 
   SerialCommandService* serial = nullptr;
+
+  // Apps read shiftX()/shiftY() from this on every render of persistent
+  // chrome — burn-in defense is a hard requirement (spec §37).
+  AmoledProtection* amoled = nullptr;
 
   EventBus* events = nullptr;
   AppRouter* router = nullptr;

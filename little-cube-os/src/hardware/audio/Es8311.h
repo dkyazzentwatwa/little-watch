@@ -20,11 +20,20 @@ namespace Es8311 {
 // Returns false if the chip does not ACK on I2C (e.g. wrong board).
 bool init(TwoWire& wire, uint8_t addr, uint32_t sampleRate);
 
-// DAC (speaker) volume, 0..100. 0xBF register value == 0 dB.
+// The clean maximum: at and below this percentage the DAC runs at or under
+// 0 dB. Above it the extra gain is digital and clips hot content — the Sound
+// screen marks this point so the boost is an informed choice.
+constexpr uint8_t kUnityVolumePercent = 80;
+
+// DAC (speaker) volume, 0..100, mapped piecewise onto REG32 (0.5 dB/step):
+// 0 = mute, 1..80% spans -40..0 dB, 81..100% spans 0..+10 dB.
 void setVolume(uint8_t percent);
 
-// ADC (microphone) PGA gain, 0..7 (maps to ES8311 REG16 0x00..0x07 range).
+// ADC (microphone) gain, 0..7 = 0..42 dB in 6 dB steps (ES8311 REG16).
+// Remembered and re-applied by init(): every recording cold-starts the codec,
+// so a bare register write would not survive to the next take.
 void setMicGain(uint8_t gain);
+uint8_t micGain();
 
 void mute(bool muted);
 

@@ -23,8 +23,14 @@ class NotesService {
  public:
   void begin(SdStorage* storage);
 
-  // Fills out up to maxNotes entries (pinned first). Returns the count.
-  size_t list(NoteInfo* out, size_t maxNotes);
+  // Restores notes whose only copy is a leftover .bak from an interrupted
+  // write, and reaps stray .tmp files. Run once per card mount.
+  void recoverInterrupted();
+
+  // Fills out up to maxNotes entries (pinned first) and returns how many were
+  // written. `totalOut`, when given, receives how many notes exist — the
+  // caller needs that to admit it is showing a window, not the whole card.
+  size_t list(NoteInfo* out, size_t maxNotes, size_t* totalOut = nullptr);
 
   bool read(const char* path, String& outBody, size_t maxBytes, bool& truncated);
   bool write(const char* path, const String& body);
@@ -51,6 +57,9 @@ class NotesService {
   void loadFlags();
   bool saveFlags();
   int findFlag(const String* arr, size_t count, const char* path) const;
+  // Moves a flagged note's entry to newPath, or drops it when newPath is
+  // null. Returns true when something changed (the caller then persists).
+  bool retargetFlags(const char* oldPath, const char* newPath);
 
   SdStorage* storage_ = nullptr;
 

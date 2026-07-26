@@ -16,6 +16,12 @@ class SdStorage {
   // card mounts; only creates what is missing.
   bool ensureTree();
 
+  // Resumable form of ensureTree(): creates one directory per call and
+  // returns true when the whole tree is present. Used by the kernel's
+  // deferred-work slot so a card mount never stalls a frame.
+  void resetTreeCursor();
+  bool ensureTreeStep();
+
   // Canonicalizes and validates a user-supplied path. Returns true and
   // writes the safe absolute path into out when the path is inside an
   // allowed root; rejects "..", backslashes, control characters.
@@ -32,4 +38,5 @@ class SdStorage {
 
  private:
   SdCardAdapter* card_ = nullptr;
+  uint8_t treeCursor_ = 0;
 };

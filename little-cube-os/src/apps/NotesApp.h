@@ -14,9 +14,9 @@ class NotesApp : public App {
   explicit NotesApp(Services& services) : services_(services) {}
 
   void onOpen() override;
-  void onClose() override {}
-  void onPause() override {}
-  void onResume() override { dirty_ = true; }
+  void onClose() override;
+  void onPause() override;
+  void onResume() override;
 
   void update(uint32_t deltaMs) override { (void)deltaMs; }
   void render() override;
@@ -31,6 +31,11 @@ class NotesApp : public App {
 
   void refreshList();
   bool openNote(size_t index);
+  // Counts the lines widgets::textBlock will actually draw for body_ at the
+  // current font size. Called on open and on a font change only — never from
+  // render(), which runs every loop iteration.
+  void measureBody();
+  int32_t maxScroll() const;
   void renderList(Arduino_GFX& gfx);
   void renderReading(Arduino_GFX& gfx);
   void renderConfirmDelete(Arduino_GFX& gfx);
@@ -50,12 +55,14 @@ class NotesApp : public App {
 
   NoteInfo notes_[kMaxNotes];
   size_t noteCount_ = 0;
+  size_t noteTotal_ = 0;  // notes on the card, which can exceed kMaxNotes
   size_t pageStart_ = 0;
   widgets::Rect rowRects_[kPageSize];
 
   size_t openIndex_ = 0;
   String body_;
   bool bodyTruncated_ = false;
+  int32_t wrappedLines_ = 0;
   int16_t scrollY_ = 0;
   uint8_t fontSize_ = 2;
   widgets::Rect deleteRect_;

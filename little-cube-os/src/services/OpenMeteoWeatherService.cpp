@@ -16,6 +16,8 @@ namespace {
 
 constexpr const char* kCachePath = "/weather_cache.json";
 constexpr uint32_t kAutoRefreshMs = 30UL * 60UL * 1000UL;
+constexpr uint32_t kFirstRetryMs = 60UL * 1000UL;    // first retry after a failure
+constexpr uint32_t kMaxRetryMs = kAutoRefreshMs;     // ceiling for the backoff
 
 const char* conditionFromWmo(int code) {
   if (code == 0) return "Clear";
@@ -58,6 +60,10 @@ bool httpGetJson(const String& url, JsonDocument& doc, const JsonDocument* filte
   if (!http.begin(client, url)) {
     return false;
   }
+  // Force HTTP/1.0 so the response is identity-encoded, not chunked: reading
+  // http.getStream() directly would otherwise feed chunk-size framing bytes
+  // into ArduinoJson and corrupt the parse (seen as InvalidInput on-device).
+  http.useHTTP10(true);
   const int code = http.GET();
   bool ok = false;
   if (code == 200) {
@@ -112,24 +118,20 @@ void weatherFetchTask(void* arg) {
     return;
   }
 
-  JsonDocument filter;
-  filter["current"]["temperature_2m"] = true;
-  filter["current"]["weather_code"] = true;
-  filter["current"]["precipitation_probability"] = true;
-  filter["daily"]["temperature_2m_max"] = true;
-  filter["daily"]["temperature_2m_min"] = true;
-  filter["daily"]["precipitation_probability_max"] = true;
-  filter["daily"]["weather_code"] = true;
-
+  // No response filter: it was silently dropping every current/daily value
+  // (the parse succeeded but returned zeros). The forecast payload is ~1 KB, so
+  // parsing it whole is cheap and correct. `precipitation_probability` is NOT a
+  // valid Open-Meteo *current* variable (it is hourly/daily only) — requesting
+  // it can 400 the whole call — so today's rain chance comes from daily[0].
   JsonDocument doc;
   char url[256];
   snprintf(url, sizeof(url),
            "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
-           "&current=temperature_2m,weather_code,precipitation_probability"
+           "&current=temperature_2m,weather_code"
            "&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,"
            "weather_code&forecast_days=3&timezone=auto",
            lat, lon);
-  if (!httpGetJson(String(url), doc, &filter)) {
+  if (!httpGetJson(String(url), doc, nullptr)) {
     self->fetchState_ = 3;
     vTaskDelete(nullptr);
     return;
@@ -140,16 +142,18 @@ void weatherFetchTask(void* arg) {
   s.valid = true;
   strncpy(s.location, self->resolvedName_, sizeof(s.location) - 1);
   s.temperatureC = doc["current"]["temperature_2m"] | 0.0f;
-  s.precipitationChancePct = doc["current"]["precipitation_probability"] | 0;
-  strncpy(s.condition, conditionFromWmo(doc["current"]["weather_code"] | -1),
-          sizeof(s.condition) - 1);
+  // weather_code is the current field name; older responses used weathercode.
+  int curCode = doc["current"]["weather_code"] | (doc["current"]["weathercode"] | -1);
+  strncpy(s.condition, conditionFromWmo(curCode), sizeof(s.condition) - 1);
   for (int i = 0; i < 3; i++) {
     s.days[i].highC = doc["daily"]["temperature_2m_max"][i] | 0.0f;
     s.days[i].lowC = doc["daily"]["temperature_2m_min"][i] | 0.0f;
     s.days[i].precipitationChancePct = doc["daily"]["precipitation_probability_max"][i] | 0;
-    strncpy(s.days[i].condition, conditionFromWmo(doc["daily"]["weather_code"][i] | -1),
-            sizeof(s.days[i].condition) - 1);
+    int dCode = doc["daily"]["weather_code"][i] | (doc["daily"]["weathercode"][i] | -1);
+    strncpy(s.days[i].condition, conditionFromWmo(dCode), sizeof(s.days[i].condition) - 1);
   }
+  // Today's rain chance from the daily figure (no current-precip variable).
+  s.precipitationChancePct = s.days[0].precipitationChancePct;
   s.highC = s.days[0].highC;
   s.lowC = s.days[0].lowC;
   s.fetchedAtUptimeMs = millis();
@@ -168,6 +172,8 @@ void OpenMeteoWeatherService::attach(SettingsService* settings, WifiService* wif
 }
 
 void OpenMeteoWeatherService::begin() {
+  // Repair the cache file if a write was interrupted, before reading it.
+  AtomicFile::cleanupSiblings(LittleFS, kCachePath);
   loadCache();
 }
 
@@ -191,8 +197,28 @@ bool OpenMeteoWeatherService::refresh() {
   resolvedName_[sizeof(resolvedName_) - 1] = '\0';
 
   fetchState_ = 1;
-  xTaskCreate(weatherFetchTask, "weather", 12288, this, 1, nullptr);
+  if (xTaskCreate(weatherFetchTask, "weather", 12288, this, 1, nullptr) != pdPASS) {
+    // Leaving fetchState_ at 1 would disable weather for the rest of the boot,
+    // because refresh() reads that as "a fetch is already running".
+    fetchState_ = 0;
+    Serial.println("[weather] fetch task could not start (low memory)");
+    return false;
+  }
   return true;
+}
+
+// Failure backoff. Doubling from a minute up to the normal refresh period
+// keeps a permanently-failing setup (a mistyped city geocodes to nothing,
+// forever) from spawning a 12 KB TLS task on every tick.
+void OpenMeteoWeatherService::backOff() {
+  sinceFetchMs_ = 0;
+  if (retryDelayMs_ == 0) {
+    retryDelayMs_ = kFirstRetryMs;
+  } else if (retryDelayMs_ < kMaxRetryMs / 2) {
+    retryDelayMs_ *= 2;
+  } else {
+    retryDelayMs_ = kMaxRetryMs;
+  }
 }
 
 void OpenMeteoWeatherService::update(uint32_t deltaMs) {
@@ -203,6 +229,7 @@ void OpenMeteoWeatherService::update(uint32_t deltaMs) {
     snapshot_ = staging_;
     everFetched_ = true;
     sinceFetchMs_ = 0;
+    retryDelayMs_ = 0;
     if (didGeocode_ && settings_ != nullptr) {
       settings_->setWeatherLocation(resolvedName_, resolvedLat_, resolvedLon_);
     }
@@ -214,13 +241,21 @@ void OpenMeteoWeatherService::update(uint32_t deltaMs) {
     }
   } else if (fetchState_ == 3) {
     fetchState_ = 0;
-    sinceFetchMs_ = 0;  // back off a full period before retrying
+    backOff();
   }
 
-  // Gentle auto-refresh whenever the internet is up.
-  if (wifi_ != nullptr && wifi_->internet() &&
-      (!everFetched_ || sinceFetchMs_ >= kAutoRefreshMs) && fetchState_ == 0) {
-    refresh();
+  // Gentle auto-refresh whenever the internet is up. The old guard was
+  // (!everFetched_ || sinceFetchMs_ >= kAutoRefreshMs): until the first
+  // success !everFetched_ short-circuited it, so resetting sinceFetchMs_ on
+  // failure backed off nothing at all and every failure retried immediately.
+  const uint32_t dueMs = retryDelayMs_ > 0 ? retryDelayMs_
+                                           : (everFetched_ ? kAutoRefreshMs : 0);
+  if (wifi_ != nullptr && wifi_->internet() && fetchState_ == 0 && sinceFetchMs_ >= dueMs) {
+    if (!refresh()) {
+      // Refused (no location configured yet, or the task would not start).
+      // Back off like a failure so the reason is not re-printed every tick.
+      backOff();
+    }
   }
 }
 

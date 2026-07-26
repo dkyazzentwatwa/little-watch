@@ -45,6 +45,15 @@ void drawRecording(Arduino_GFX& gfx, int16_t x, int16_t y, const SystemState& st
   gfx.fillCircle(x + 6, y + 9, 6, theme::kBad);
 }
 
+void drawPlaying(Arduino_GFX& gfx, int16_t x, int16_t y, const SystemState& state) {
+  if (!state.playingAudio) {
+    return;
+  }
+  // A small play triangle so you can see audio is running from any app while
+  // reading — the whole point of background playback.
+  gfx.fillTriangle(x, y + 3, x, y + 15, x + 10, y + 9, theme::kAccent);
+}
+
 void drawAlarm(Arduino_GFX& gfx, int16_t x, int16_t y, const SystemState& state) {
   if (!state.alarmArmed) {
     return;
@@ -81,17 +90,20 @@ void drawBattery(Arduino_GFX& gfx, int16_t x, int16_t y, const SystemState& stat
 
 void StatusBar::render(Arduino_GFX& gfx, const SystemState& state, int16_t shiftX,
                        int16_t shiftY) {
-  const int16_t y = shiftY;
+  // Nudge the whole bar down a few px and inset the ends by kSafeInset so the
+  // clock (left) and battery (right) clear the rounded-corner bezel instead of
+  // being clipped by it.
+  const int16_t y = shiftY + 4;
 
   // Clock, left-aligned. Dim rather than bright: this element is persistent
   // (AMOLED protection also drifts it via shiftX/shiftY).
   gfx.setTextSize(theme::kTextSizeSmall);
   gfx.setTextColor(state.timeValid ? theme::kText : theme::kTextDim);
-  gfx.setCursor(theme::kPadding + shiftX, y + 6);
+  gfx.setCursor(theme::kSafeInset + shiftX, y + 6);
   gfx.print(state.clockHhMm);
 
   // Right-aligned glyph row, packed right to left.
-  int16_t x = DISPLAY_WIDTH - theme::kPadding + shiftX;
+  int16_t x = DISPLAY_WIDTH - theme::kSafeInset + shiftX;
   x -= 26;
   drawBattery(gfx, x, y + 3, state);
   x -= 22;
@@ -105,5 +117,9 @@ void StatusBar::render(Arduino_GFX& gfx, const SystemState& state, int16_t shift
   if (state.recording) {
     x -= 20;
     drawRecording(gfx, x, y + 4, state);
+  }
+  if (state.playingAudio) {
+    x -= 18;
+    drawPlaying(gfx, x, y + 4, state);
   }
 }

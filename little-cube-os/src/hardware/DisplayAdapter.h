@@ -22,6 +22,11 @@ class DisplayAdapter {
   Arduino_GFX* canvas();
   void markDirty() { dirty_ = true; }
   void present();
+  // True when a frame has been drawn but not yet pushed to the panel. The
+  // kernel skips re-rendering while this holds: flushing is capped at ~30 fps
+  // but the loop runs far faster, so anything drawn meanwhile is overwritten
+  // before it is ever seen.
+  bool flushPending() const { return dirty_; }
 
   void setBrightness(uint8_t value);
   uint8_t brightness() const { return brightness_; }

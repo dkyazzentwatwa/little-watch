@@ -119,14 +119,25 @@ void WifiService::loadSaved() {
 }
 
 void WifiService::persistSaved() {
-  wifiPrefs.putUChar("count", savedCount_);
   char key[8];
+  // Drop every slot above the live count FIRST. Writing only 0..count-1 left
+  // a forgotten network's ssidN/passN in the namespace, so `wifi forget` kept
+  // the plaintext PSK readable in NVS forever.
+  for (uint8_t i = savedCount_; i < kMaxSaved; i++) {
+    snprintf(key, sizeof(key), "ssid%u", i);
+    wifiPrefs.remove(key);
+    snprintf(key, sizeof(key), "pass%u", i);
+    wifiPrefs.remove(key);
+  }
   for (uint8_t i = 0; i < savedCount_; i++) {
     snprintf(key, sizeof(key), "ssid%u", i);
     wifiPrefs.putString(key, saved_[i].ssid);
     snprintf(key, sizeof(key), "pass%u", i);
     wifiPrefs.putString(key, saved_[i].pass);
   }
+  // Count last: a power cut mid-write then claims fewer entries than exist,
+  // never more.
+  wifiPrefs.putUChar("count", savedCount_);
 }
 
 bool WifiService::isSaved(const char* ssid) const {
@@ -229,7 +240,13 @@ bool WifiService::connectTo(const char* ssid, const char* password, bool hidden)
   if (ssid == nullptr || ssid[0] == '\0') {
     return false;
   }
-  WiFi.mode(WIFI_STA);
+  // enableSTA ORs the STA bit in; WiFi.mode(WIFI_STA) replaced the mode and
+  // silently killed the setup portal's SoftAP mid-connect.
+  WiFi.enableSTA(true);
+  // WiFi.begin() has no hidden-network flag (its 5th argument is tryConnect,
+  // and wifi_sta_config_t has no such field either). A beacon-suppressed AP
+  // is only reliably found by a full all-channel scan, so that is the lever.
+  WiFi.setScanMethod(hidden ? WIFI_ALL_CHANNEL_SCAN : WIFI_FAST_SCAN);
   autoIndex_ = -1;  // manual connect overrides the boot sequence
   pendingSsid_ = ssid;
   pendingPass_ = password != nullptr ? password : "";
@@ -246,11 +263,16 @@ bool WifiService::connectTo(const char* ssid, const char* password, bool hidden)
 
 void WifiService::wipePending() {
   // Spec §19: clear temporary credential buffers after use. Overwrite the
-  // String storage before releasing it.
+  // String storage before releasing it. The SSID goes too — on its own it
+  // identifies which PSK the durable copy belongs to.
   for (size_t i = 0; i < pendingPass_.length(); i++) {
     pendingPass_.setCharAt(i, '\0');
   }
   pendingPass_ = "";
+  for (size_t i = 0; i < pendingSsid_.length(); i++) {
+    pendingSsid_.setCharAt(i, '\0');
+  }
+  pendingSsid_ = "";
 }
 
 void WifiService::onConnected() {
@@ -271,7 +293,12 @@ void WifiService::startProbe() {
   }
   probeResult_ = 0;
   probeRunning_ = true;
-  xTaskCreate(wifiProbeTask, "wifiprobe", 8192, this, 1, nullptr);
+  if (xTaskCreate(wifiProbeTask, "wifiprobe", 8192, this, 1, nullptr) != pdPASS) {
+    // Leaving probeRunning_ set would block every future probe, and with it
+    // internet_ — which gates SNTP and the weather refresh — for the whole boot.
+    probeRunning_ = false;
+    Serial.println("[wifi] probe task could not start (low memory)");
+  }
 }
 
 void WifiService::startScan(bool printWhenDone) {
@@ -279,11 +306,25 @@ void WifiService::startScan(bool printWhenDone) {
     Serial.println("[wifi] offline mode is on");
     return;
   }
-  WiFi.mode(WIFI_STA);
+  if (scanPending_) {
+    return;  // one scan at a time; a second scanNetworks() would be refused
+  }
+  // enableSTA ORs the STA bit in rather than replacing the mode, so the setup
+  // portal's SoftAP keeps beaconing while we scan.
+  WiFi.enableSTA(true);
   scanPrint_ = printWhenDone;
   scanPending_ = true;
   WiFi.scanNetworks(true /*async*/);
-  setState(WifiState::Scanning);
+  // Scanning is tracked by scanPending_, not by the state. Overwriting state_
+  // here abandoned a connect in flight: the Connecting branch in update()
+  // stopped running, so the network was never saved, the plaintext PSK stayed
+  // in RAM, and the connectivity probe never started.
+  const bool busy = state_ == WifiState::Connecting || state_ == WifiState::Connected ||
+                    state_ == WifiState::ConnectedNoInternet ||
+                    state_ == WifiState::CaptivePortalSuspected;
+  if (!busy) {
+    setState(WifiState::Scanning);
+  }
   if (events_ != nullptr) {
     events_->publish(SystemEvent::WifiScanStarted);
   }
@@ -305,7 +346,7 @@ void WifiService::setOfflineMode(bool offline) {
     internet_ = false;
     setState(WifiState::Disabled);
   } else {
-    WiFi.mode(WIFI_STA);
+    WiFi.enableSTA(true);  // OR the bit in; never tear down a running SoftAP
     setState(WifiState::Idle);
     if (savedCount_ > 0) {
       autoIndex_ = 0;
@@ -323,40 +364,58 @@ String WifiService::currentSsid() const {
 }
 
 void WifiService::update(uint32_t deltaMs) {
-  // Async scan completion.
+  // Async scan completion. scanComplete() returns WIFI_SCAN_RUNNING (-1)
+  // while it works and WIFI_SCAN_FAILED (-2) if the driver refused or the
+  // 60 s timeout expired — the failure used to be ignored, which left
+  // scanPending_ and the Scanning state stuck forever with scanPrint_ still
+  // armed, so a much later scan dumped results nobody asked for.
   if (scanPending_) {
     const int16_t n = WiFi.scanComplete();
-    if (n >= 0) {
+    if (n != WIFI_SCAN_RUNNING) {
       scanPending_ = false;
-      scanCount_ = 0;
-      for (int16_t i = 0; i < n && scanCount_ < kMaxScanResults; i++) {
-        ScanResult& r = results_[scanCount_];
-        strncpy(r.ssid, WiFi.SSID(i).c_str(), sizeof(r.ssid) - 1);
-        r.ssid[sizeof(r.ssid) - 1] = '\0';
-        r.rssi = WiFi.RSSI(i);
-        r.secure = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
-        r.saved = isSaved(r.ssid);
-        scanCount_++;
-      }
-      WiFi.scanDelete();
-      setState(scanCount_ > 0 ? WifiState::NetworksFound : WifiState::Idle);
-      if (events_ != nullptr) {
-        events_->publish(SystemEvent::WifiScanCompleted);
-      }
-      if (scanPrint_) {
-        scanPrint_ = false;
-        if (scanCount_ == 0) {
-          Serial.println("no networks found");
+      if (n < 0) {
+        scanCount_ = 0;
+        WiFi.scanDelete();
+        if (scanPrint_) {
+          scanPrint_ = false;
+          Serial.println("scan failed");
         }
-        for (uint8_t i = 0; i < scanCount_; i++) {
-          Serial.printf("%2u. %-24s %4d dBm %s%s\n", (unsigned)(i + 1), results_[i].ssid,
-                        (int)results_[i].rssi, results_[i].secure ? "locked" : "open",
-                        results_[i].saved ? " · saved" : "");
+      } else {
+        scanCount_ = 0;
+        for (int16_t i = 0; i < n && scanCount_ < kMaxScanResults; i++) {
+          ScanResult& r = results_[scanCount_];
+          strncpy(r.ssid, WiFi.SSID(i).c_str(), sizeof(r.ssid) - 1);
+          r.ssid[sizeof(r.ssid) - 1] = '\0';
+          r.rssi = WiFi.RSSI(i);
+          r.secure = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
+          r.saved = isSaved(r.ssid);
+          scanCount_++;
+        }
+        WiFi.scanDelete();
+        if (events_ != nullptr) {
+          events_->publish(SystemEvent::WifiScanCompleted);
+        }
+        if (scanPrint_) {
+          scanPrint_ = false;
+          if (scanCount_ == 0) {
+            Serial.println("no networks found");
+          }
+          for (uint8_t i = 0; i < scanCount_; i++) {
+            Serial.printf("%2u. %-24s %4d dBm %s%s\n", (unsigned)(i + 1), results_[i].ssid,
+                          (int)results_[i].rssi, results_[i].secure ? "locked" : "open",
+                          results_[i].saved ? " · saved" : "");
+          }
         }
       }
-      // Resume whatever we were doing (a connect in flight keeps priority).
-      if (WiFi.status() == WL_CONNECTED) {
-        setState(internet_ ? WifiState::Connected : WifiState::ConnectedNoInternet);
+      // Only the Scanning state is ours to leave; a connect in flight or a
+      // live connection kept its own state throughout and must not be
+      // clobbered here.
+      if (state_ == WifiState::Scanning) {
+        if (WiFi.status() == WL_CONNECTED) {
+          onConnected();  // full path: save, wipe, probe — never setState alone
+        } else {
+          setState(scanCount_ > 0 ? WifiState::NetworksFound : WifiState::Idle);
+        }
       }
     }
   }

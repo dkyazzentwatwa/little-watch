@@ -5,6 +5,7 @@
 
 #include "../../core/Services.h"
 #include "../../hardware/SdCardAdapter.h"
+#include "../../services/RecorderService.h"
 #include "../../storage/SdStorage.h"
 #include "../../storage/StoragePaths.h"
 #include "../CmdArgs.h"
@@ -27,6 +28,22 @@ bool sanitized(Services& services, const char* raw, String& out, const char* fal
   }
   return true;
 }
+
+// Streaming CRC-32 (poly 0xEDB88320), bitwise — no table. Pass the previous
+// return value back in to continue; diagnostics only, the serial link is the
+// bottleneck, not this loop.
+uint32_t crc32Update(uint32_t crc, const uint8_t* data, size_t len) {
+  crc = ~crc;
+  for (size_t i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (uint8_t b = 0; b < 8; b++) {
+      crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+    }
+  }
+  return ~crc;
+}
+
+constexpr char kB64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 void listOne(fs::File& entry, const char* parent) {
   if (entry.isDirectory()) {
@@ -66,6 +83,7 @@ void printFilesHelp() {
   Serial.println("files list [path]             list a directory (default /littlecube)");
   Serial.println("files tree [path]             directory tree, 3 levels deep");
   Serial.println("files cat <path>              print a text file (8 KB cap)");
+  Serial.println("files dump <path> [off [len]] base64 dump (binary-safe, crc32 trailer)");
   Serial.println("files mkdir <path>            create a directory");
   Serial.println("files copy <src> <dst>        copy a file");
   Serial.println("files move <src> <dst>        move / rename a file");
@@ -151,6 +169,74 @@ bool handleFilesCommand(Services& services, const char* verb, char* args) {
       Serial.println();
     }
     f.close();
+    return true;
+  }
+
+  if (strcmp(verb, "dump") == 0) {
+    if (!requireCard(services)) {
+      return true;
+    }
+    if (services.recorder != nullptr && services.recorder->recording()) {
+      Serial.println("error: refusing to dump while recording (SD reads disturb the mic)");
+      return true;
+    }
+    char* cursor = args;
+    String path;
+    if (!sanitized(services, cmdargs::nextToken(cursor), path, nullptr)) {
+      return true;
+    }
+    fs::File f = SD_MMC.open(path, FILE_READ);
+    if (!f || f.isDirectory()) {
+      Serial.println("error: not a readable file");
+      return true;
+    }
+    const uint32_t size = f.size();
+    const char* offTok = cmdargs::nextToken(cursor);
+    const char* lenTok = cmdargs::nextToken(cursor);
+    uint32_t offset = offTok != nullptr ? strtoul(offTok, nullptr, 10) : 0;
+    if (offset > size) {
+      offset = size;
+    }
+    uint32_t len = lenTok != nullptr ? strtoul(lenTok, nullptr, 10) : size - offset;
+    if (len > size - offset) {
+      len = size - offset;
+    }
+    f.seek(offset);
+    Serial.printf("DUMP %s size=%lu offset=%lu len=%lu\n", path.c_str(), (unsigned long)size,
+                  (unsigned long)offset, (unsigned long)len);
+    // 57 raw bytes -> one 76-char base64 line (the classic MIME width); read
+    // four lines per SD transaction to keep the FATFS call count down.
+    uint8_t raw[57 * 4];
+    char line[77];
+    uint32_t remaining = len;
+    uint32_t crc = 0;
+    while (remaining > 0) {
+      const size_t want = remaining < sizeof(raw) ? remaining : sizeof(raw);
+      const size_t got = f.read(raw, want);
+      if (got == 0) {
+        break;  // truncated read: DUMP-END's len mismatch flags it host-side
+      }
+      crc = crc32Update(crc, raw, got);
+      for (size_t base = 0; base < got; base += 57) {
+        const size_t n = got - base < 57 ? got - base : 57;
+        size_t o = 0;
+        for (size_t i = 0; i < n; i += 3) {
+          const uint32_t b0 = raw[base + i];
+          const uint32_t b1 = i + 1 < n ? raw[base + i + 1] : 0;
+          const uint32_t b2 = i + 2 < n ? raw[base + i + 2] : 0;
+          const uint32_t v = (b0 << 16) | (b1 << 8) | b2;
+          line[o++] = kB64[(v >> 18) & 63];
+          line[o++] = kB64[(v >> 12) & 63];
+          line[o++] = i + 1 < n ? kB64[(v >> 6) & 63] : '=';
+          line[o++] = i + 2 < n ? kB64[v & 63] : '=';
+        }
+        line[o] = '\0';
+        Serial.println(line);
+      }
+      remaining -= got;
+    }
+    f.close();
+    Serial.printf("DUMP-END crc32=%08lx\n", (unsigned long)crc);
     return true;
   }
 

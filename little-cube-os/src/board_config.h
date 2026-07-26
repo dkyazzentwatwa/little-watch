@@ -33,6 +33,14 @@ constexpr int PIN_LCD_RST = -1;  // reset handled by the expander, not a GPIO
 constexpr uint8_t I2C_ADDR_EXPANDER = 0x20;  // XCA9554 (panel power/reset)
 constexpr uint8_t DEFAULT_BRIGHTNESS = 220;  // 0..255
 
+// Bounds for the *stored* brightness setting only. A corrupt or zero NVS
+// record used to blank the panel at boot with no on-device way back, so
+// SettingsService clamps into this range; 16 is the floor the Settings and
+// Home steppers already enforce. DisplayAdapter::setBrightness() is
+// deliberately NOT clamped — screen blanking depends on 0 reaching the panel.
+constexpr uint8_t MIN_BRIGHTNESS = 16;
+constexpr uint8_t MAX_BRIGHTNESS = 255;
+
 // --- Touch: FT3168 (capacitive) ---------------------------------------------
 // Shares the Wire bus. Raw coordinates map 1:1 to screen pixels at rotation 0
 // (NO axis swap — Cardputer-derived ports that assumed one had to be patched).
@@ -74,6 +82,10 @@ constexpr int16_t SWIPE_THRESHOLD_PX = 52;
 constexpr uint32_t LONG_PRESS_MS = 650;
 constexpr uint32_t DOUBLE_TAP_WINDOW_MS = 300;
 constexpr uint32_t BOOT_LONG_PRESS_MS = 900;
+// FT3168 polling is gated on PIN_TOUCH_INT because I2C traffic couples into
+// the ES8311 analog-mic path (500 Hz/1 kHz comb in recordings). If a unit
+// never raises INT, touch falls back to this cadence instead of going dead.
+constexpr uint32_t TOUCH_INT_FALLBACK_POLL_MS = 20;
 
 // --- Palette (RGB565) ---------------------------------------------------------
 constexpr uint16_t COLOR_BG = 0x0000;

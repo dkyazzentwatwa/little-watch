@@ -41,12 +41,14 @@ bool handleStorageCommand(Services& services, const char* verb, char* args) {
   }
 
   if (strcmp(verb, "eject") == 0) {
-    if (services.recorder != nullptr && services.recorder->recording()) {
-      Serial.println("error: recording active — stop it first");
+    // No "stop it first" guard any more: the eject request stops the recorder
+    // and playback itself, then unmounts once they have closed their files.
+    // Confirmation arrives asynchronously on this console.
+    if (!services.sdCard->requestEject()) {
+      Serial.println("error: nothing mounted");
       return true;
     }
-    Serial.println(services.sdCard->safeEject() ? "safe to remove the card"
-                                                : "error: nothing mounted");
+    Serial.println("stopping writers and unmounting — wait for 'safe to remove the card'");
     return true;
   }
 

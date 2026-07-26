@@ -60,8 +60,14 @@ bool handleWifiCommand(Services& services, PasswordPrompt& prompt, const char* v
     prompt.hidden = flag != nullptr && strcmp(flag, "hidden") == 0;
     strncpy(prompt.ssid, ssid, sizeof(prompt.ssid) - 1);
     prompt.ssid[sizeof(prompt.ssid) - 1] = '\0';
-    Serial.println("Password: (note: most terminals still show what you type; the cube never"
-                   " echoes, logs, or stores it outside encrypted NVS)");
+    // Honest wording: this build has no flash encryption, so NVS is plaintext
+    // to anyone who can run `esptool read_flash` on the cube. The prompt goes
+    // last so it is the line the cursor sits under.
+    Serial.println("note: most terminals still show what you type. The cube never echoes or"
+                   " logs the password and never writes it to the SD card, but it is stored");
+    Serial.println("      in NVS flash, which is NOT encrypted on this board — anyone with"
+                   " physical access can read it back.");
+    Serial.println("Password:");
     return true;
   }
 

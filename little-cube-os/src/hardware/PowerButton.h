@@ -19,7 +19,11 @@ class PowerButton {
   Press poll();
 
  private:
+  static constexpr uint32_t kDebounceMs = 30;
+
   bool wasDown_ = false;
   bool longFired_ = false;
+  bool lastRawDown_ = false;
   uint32_t downSinceMs_ = 0;
+  uint32_t lastEdgeMs_ = 0;
 };

@@ -24,6 +24,7 @@ class SerialCommandService {
   Services* services_ = nullptr;
   MultilineBuffer multiline_;
   PasswordPrompt wifiPrompt_;
+  PasswordPrompt assistantKeyPrompt_;
 
   static constexpr size_t kMaxLineLen = 256;
   char line_[kMaxLineLen];

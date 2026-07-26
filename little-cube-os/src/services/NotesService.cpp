@@ -30,7 +30,53 @@ const char* baseName(const char* path) {
 
 void NotesService::begin(SdStorage* storage) {
   storage_ = storage;
+  // Repair the flags index if a write was interrupted, before reading it.
+  AtomicFile::cleanupSiblings(LittleFS, kFlagsPath);
   loadFlags();
+}
+
+// Walks one notes directory and restores any note whose only surviving copy
+// is a <name>.bak left by a write that lost power between the two renames.
+// Such a file is invisible to every listing (isNoteFile filters .bak out), so
+// without this pass the note is simply gone.
+void NotesService::recoverInterrupted() {
+  if (storage_ == nullptr || storage_->card() == nullptr || !storage_->card()->writable()) {
+    return;
+  }
+  const char* roots[] = {paths::kNotesText, paths::kDeckNotes};
+  for (const char* root : roots) {
+    fs::File dir = SD_MMC.open(root);
+    if (!dir || !dir.isDirectory()) {
+      if (dir) {
+        dir.close();
+      }
+      continue;
+    }
+    for (fs::File entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
+      if (entry.isDirectory()) {
+        continue;
+      }
+      const String name(entry.name());
+      String full = String(root) + "/" + baseName(entry.name());
+      entry.close();
+      if (name.endsWith(".tmp")) {
+        SD_MMC.remove(full);  // a temp file is never the real content
+        continue;
+      }
+      if (!name.endsWith(".bak")) {
+        continue;
+      }
+      String target = full.substring(0, full.length() - 4);
+      if (!SD_MMC.exists(target)) {
+        if (SD_MMC.rename(full, target)) {
+          Serial.printf("[notes] recovered interrupted write: %s\n", target.c_str());
+        }
+      } else {
+        SD_MMC.remove(full);
+      }
+    }
+    dir.close();
+  }
 }
 
 void NotesService::titleFromPath(const char* path, char* out, size_t outSize) {
@@ -87,7 +133,12 @@ void NotesService::loadFlags() {
   const DeserializationError err = deserializeJson(doc, f);
   f.close();
   if (err) {
-    Serial.printf("[notes] flags index unreadable (%s); starting clean\n", err.c_str());
+    // Be blunt: the file is left on disk but nothing here can read it, so the
+    // first favourite or pin the user sets replaces it wholesale.
+    Serial.printf(
+        "[notes] %s is corrupt (%s) — all favourites and pins are gone, and this file will be "
+        "overwritten by the next favourite/pin change\n",
+        kFlagsPath, err.c_str());
     return;
   }
   for (JsonVariant v : doc["fav"].as<JsonArray>()) {
@@ -115,6 +166,33 @@ bool NotesService::saveFlags() {
   String body;
   serializeJson(doc, body);
   return AtomicFile::writeAll(LittleFS, kFlagsPath, body);
+}
+
+// The index is keyed by path, so a rename or a delete that does not touch it
+// leaves an entry pointing at a file that no longer exists. Those entries are
+// invisible but permanent: they consume one of the kMaxFlagged slots forever,
+// and a later note that happens to land on the freed filename inherits the
+// flag. Callers persist afterwards, so a rename costs one flags write, not two.
+bool NotesService::retargetFlags(const char* oldPath, const char* newPath) {
+  bool changed = false;
+  for (int pass = 0; pass < 2; pass++) {
+    String* arr = pass == 0 ? favorites_ : pinned_;
+    size_t& n = pass == 0 ? favoriteCount_ : pinnedCount_;
+    const int at = findFlag(arr, n, oldPath);
+    if (at < 0) {
+      continue;
+    }
+    if (newPath != nullptr && newPath[0] != '\0') {
+      arr[at] = newPath;
+    } else {
+      for (size_t i = static_cast<size_t>(at); i + 1 < n; i++) {
+        arr[i] = arr[i + 1];
+      }
+      n--;
+    }
+    changed = true;
+  }
+  return changed;
 }
 
 bool NotesService::setFavorite(const char* path, bool on) {
@@ -149,40 +227,48 @@ bool NotesService::setPinned(const char* path, bool on) {
   return saveFlags();
 }
 
-size_t NotesService::list(NoteInfo* out, size_t maxNotes) {
+size_t NotesService::list(NoteInfo* out, size_t maxNotes, size_t* totalOut) {
+  if (totalOut != nullptr) {
+    *totalOut = 0;
+  }
   if (out == nullptr || maxNotes == 0 || storage_ == nullptr ||
       !storage_->card()->mounted()) {
     return 0;
   }
   size_t count = 0;
+  size_t total = 0;
 
   // Collector shared by both roots. Deck subfolders are one level deep.
   auto scanDir = [&](const char* dirPath, bool fromDeck, bool recurseOnce,
                      auto&& self) -> void {
-    if (count >= maxNotes) {
-      return;
-    }
     fs::File dir = SD_MMC.open(dirPath);
     if (!dir || !dir.isDirectory()) {
+      if (dir) {
+        dir.close();
+      }
       return;
     }
-    for (fs::File entry = dir.openNextFile(); entry && count < maxNotes;
-         entry = dir.openNextFile()) {
+    for (fs::File entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
       const String full = String(dirPath) + "/" + entry.name();
       if (entry.isDirectory()) {
         if (recurseOnce) {
           self(full.c_str(), fromDeck, false, self);
         }
       } else if (isNoteFile(entry.name())) {
-        NoteInfo& info = out[count];
-        strncpy(info.path, full.c_str(), sizeof(info.path) - 1);
-        info.path[sizeof(info.path) - 1] = '\0';
-        titleFromPath(info.path, info.title, sizeof(info.title));
-        info.sizeBytes = entry.size();
-        info.favorite = isFavorite(info.path);
-        info.pinned = isPinned(info.path);
-        info.fromDeck = fromDeck;
-        count++;
+        // Counted even past the window: the walk is cheap next to the reads,
+        // and without the real total the UI cannot say how much it is hiding.
+        total++;
+        if (count < maxNotes) {
+          NoteInfo& info = out[count];
+          strncpy(info.path, full.c_str(), sizeof(info.path) - 1);
+          info.path[sizeof(info.path) - 1] = '\0';
+          titleFromPath(info.path, info.title, sizeof(info.title));
+          info.sizeBytes = entry.size();
+          info.favorite = isFavorite(info.path);
+          info.pinned = isPinned(info.path);
+          info.fromDeck = fromDeck;
+          count++;
+        }
       }
       entry.close();
     }
@@ -203,6 +289,9 @@ size_t NotesService::list(NoteInfo* out, size_t maxNotes) {
       }
       out[front++] = tmp;
     }
+  }
+  if (totalOut != nullptr) {
+    *totalOut = total;
   }
   return count;
 }
@@ -307,6 +396,16 @@ bool NotesService::rename(const char* path, const char* newTitle, String& outNew
     return false;
   }
   outNewPath = candidate;
+
+  // A flag may have been stored under the path as listed or its sanitized
+  // form; move whichever is there so the favourite survives the rename.
+  bool moved = retargetFlags(safe.c_str(), candidate.c_str());
+  if (!safe.equals(path)) {
+    moved = retargetFlags(path, candidate.c_str()) || moved;
+  }
+  if (moved && !saveFlags()) {
+    Serial.println("[notes] renamed, but the favourite/pin index could not be saved");
+  }
   return true;
 }
 
@@ -316,7 +415,17 @@ bool NotesService::remove(const char* path) {
     return false;
   }
   AtomicFile::cleanupSiblings(SD_MMC, safe.c_str());
-  return SD_MMC.remove(safe);
+  if (!SD_MMC.remove(safe)) {
+    return false;
+  }
+  bool dropped = retargetFlags(safe.c_str(), nullptr);
+  if (!safe.equals(path)) {
+    dropped = retargetFlags(path, nullptr) || dropped;
+  }
+  if (dropped && !saveFlags()) {
+    Serial.println("[notes] deleted, but the favourite/pin index could not be saved");
+  }
+  return true;
 }
 
 void NotesService::seedWelcomeIfEmpty() {

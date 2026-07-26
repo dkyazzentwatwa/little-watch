@@ -6,7 +6,12 @@
 #include "../core/SystemState.h"
 #include "../hardware/DisplayAdapter.h"
 #include "../services/ProvisioningService.h"
+#include "../hardware/audio/AudioAdapter.h"
+#include "../hardware/audio/Es8311.h"
+#include "../services/RecorderService.h"
 #include "../services/SettingsService.h"
+#include "../ui/widgets/Widgets.h"
+#include "../ui/AmoledProtection.h"
 #include "../ui/Theme.h"
 
 namespace {
@@ -16,15 +21,40 @@ constexpr uint32_t kLivePollMs = 1000;  // refresh cadence for live screens
 
 void SettingsApp::onOpen() {
   screen_ = Screen::Root;
+  confirmRestart_ = false;
   dirty_ = true;
 }
 
 void SettingsApp::onClose() {
-  // Leaving Settings never leaves the setup AP running silently.
-  if (screen_ == Screen::SetupMode && services_.provisioning != nullptr &&
+  leaveSetupMode();
+  confirmRestart_ = false;
+}
+
+void SettingsApp::onPause() {
+  // Backgrounded still means unattended: a paused SettingsApp used to sit on
+  // the stack broadcasting a provisioning AP until reboot.
+  leaveSetupMode();
+  // An armed reboot confirm must never be waiting under the user's first tap
+  // when they come back to this screen.
+  confirmRestart_ = false;
+}
+
+// Leaving the setup screen — for good or just into the background — never
+// leaves the AP running silently. Moving screen_ matters as much as stopping
+// the radio: a paused app resumes on the screen it left, and SetupMode would
+// then render a live-looking SSID and password for a hotspot that is gone.
+void SettingsApp::leaveSetupMode() {
+  if (screen_ != Screen::SetupMode) {
+    return;
+  }
+  // Phase::Success means provisioning is already finishing its own teardown;
+  // stopping the AP here would cut the portal off mid-handshake.
+  if (services_.provisioning != nullptr &&
       services_.provisioning->phase() != ProvisioningService::Phase::Success) {
     services_.provisioning->stop();
   }
+  screen_ = Screen::Wifi;
+  dirty_ = true;
 }
 
 void SettingsApp::go(Screen screen) {
@@ -57,17 +87,85 @@ void SettingsApp::render() {
   }
   Arduino_GFX& gfx = *display->canvas();
   gfx.fillScreen(theme::kBg);
-  statusBar_.render(gfx, state, 0, 0);
+  statusBar_.render(gfx, state, services_.amoled->shiftX(),
+                    services_.amoled->shiftY());
 
   switch (screen_) {
-    case Screen::Root: renderRoot(gfx); break;
+    case Screen::Root:
+      renderRoot(gfx);
+      if (confirmRestart_) {
+        renderRestartConfirm(gfx);
+      }
+      break;
     case Screen::Wifi: renderWifi(gfx); break;
     case Screen::WifiMethod: renderWifiMethod(gfx); break;
     case Screen::SetupMode: renderSetupMode(gfx); break;
     case Screen::Display: renderDisplay(gfx); break;
+    case Screen::Themes: renderThemes(gfx); break;
+    case Screen::Sound: renderSound(gfx); break;
     case Screen::About: renderAbout(gfx); break;
   }
   display->markDirty();
+}
+
+// A live preview grid: each row is painted in that theme's own bg/text/accent
+// so you see the palette before committing. Tapping applies + persists it.
+void SettingsApp::renderThemes(Arduino_GFX& gfx) {
+  gfx.setTextSize(theme::kTextSizeBody);
+  gfx.setTextColor(theme::kText);
+  gfx.setCursor(theme::kPadding, kTop);
+  gfx.print("Themes");
+
+  const int16_t w = DISPLAY_WIDTH - 2 * theme::kPadding;
+  const int16_t rowH = 34;
+  int16_t y = kTop + 34;
+  const uint8_t active = services_.settings != nullptr ? services_.settings->themeIndex() : 0;
+  for (uint8_t i = 0; i < theme::kThemeCount; i++) {
+    const theme::ThemeDef& t = theme::kThemes[i];
+    themeRects_[i] = {theme::kPadding, y, w, static_cast<int16_t>(rowH - 4)};
+    // Paint the swatch in the theme's own colors — an instant preview.
+    gfx.fillRoundRect(themeRects_[i].x, themeRects_[i].y, themeRects_[i].w, themeRects_[i].h, 6,
+                      t.bg);
+    if (i == active) {
+      gfx.drawRoundRect(themeRects_[i].x, themeRects_[i].y, themeRects_[i].w, themeRects_[i].h, 6,
+                        t.accent);
+    }
+    // A trio of accent/good/warn dots so the swatch reads as a palette.
+    const int16_t cy = themeRects_[i].y + themeRects_[i].h / 2;
+    gfx.fillCircle(themeRects_[i].x + 14, cy, 5, t.accent);
+    gfx.fillCircle(themeRects_[i].x + 30, cy, 5, t.good);
+    gfx.fillCircle(themeRects_[i].x + 46, cy, 5, t.warn);
+    gfx.setTextSize(theme::kTextSizeSmall);
+    gfx.setTextColor(t.text);
+    gfx.setCursor(themeRects_[i].x + 62, cy - 8);
+    gfx.print(t.name);
+    if (i == active) {
+      gfx.setTextColor(t.accent);
+      gfx.setCursor(themeRects_[i].x + themeRects_[i].w - 24, cy - 8);
+      gfx.print("*");
+    }
+    y += rowH;
+  }
+}
+
+bool SettingsApp::handleThemes(const InputEvent& event) {
+  if (event.action == InputAction::SwipeRight || event.action == InputAction::Back ||
+      event.action == InputAction::Cancel) {
+    go(Screen::Root);
+    return true;
+  }
+  if (event.action == InputAction::Tap && services_.settings != nullptr) {
+    for (uint8_t i = 0; i < theme::kThemeCount; i++) {
+      if (themeRects_[i].contains(event.x, event.y)) {
+        services_.settings->setThemeIndex(i);
+        theme::applyTheme(i);  // live: the very next frame is in the new palette
+        dirty_ = true;
+        return true;
+      }
+    }
+    return true;
+  }
+  return false;
 }
 
 void SettingsApp::renderRoot(Arduino_GFX& gfx) {
@@ -76,13 +174,89 @@ void SettingsApp::renderRoot(Arduino_GFX& gfx) {
   gfx.setCursor(theme::kPadding, kTop);
   gfx.print("Settings");
 
-  const char* labels[4] = {"Wi-Fi", "Display", "About", "Restart"};
+  const char* labels[6] = {"Wi-Fi", "Display", "Themes", "Sound", "About", "Restart"};
   const int16_t w = DISPLAY_WIDTH - 2 * theme::kPadding;
-  int16_t y = kTop + 44;
-  for (uint8_t i = 0; i < 4; i++) {
-    rootRects_[i] = widgets::button(gfx, theme::kPadding, y, w, 58, labels[i], false);
-    y += 70;
+  int16_t y = kTop + 40;
+  for (uint8_t i = 0; i < 6; i++) {
+    rootRects_[i] = widgets::button(gfx, theme::kPadding, y, w, 48, labels[i], false);
+    y += 56;
   }
+}
+
+// The whole audio path in one place: speaker on top, microphone below. The
+// mic controls were serial-only until now (`recordings gain|normalize|gate`),
+// and every control here writes through SettingsService so it survives a
+// reboot and cannot disagree with the serial family.
+void SettingsApp::renderSound(Arduino_GFX& gfx) {
+  SettingsService* settings = services_.settings;
+  if (settings == nullptr) {
+    return;
+  }
+  const int16_t w = DISPLAY_WIDTH - 2 * theme::kPadding;
+  int16_t y = widgets::header(gfx, "Sound", services_.amoled->shiftX(),
+                              services_.amoled->shiftY());
+
+  // ---- Speaker ----
+  const uint8_t vol = settings->volumePercent();
+  char line[48];
+  snprintf(line, sizeof(line), "Volume  %u%%", static_cast<unsigned>(vol));
+  widgets::text(gfx, theme::kPadding, y, line, widgets::TextStyle::Body, theme::kText);
+
+  // A meter with the unity mark drawn on it: past that tick the extra gain is
+  // digital and clips hot material, so the boost region is shown, not hidden.
+  const int16_t barY = y + 30;
+  gfx.fillRoundRect(theme::kPadding, barY, w, 8, 4, theme::kPanelAlt);
+  gfx.fillRoundRect(theme::kPadding, barY, w * vol / 100, 8,
+                    4, vol > Es8311::kUnityVolumePercent ? theme::kWarn : theme::kAccent);
+  const int16_t unityX = theme::kPadding + w * Es8311::kUnityVolumePercent / 100;
+  gfx.fillRect(unityX, barY - 4, 2, 16, theme::kTextDim);
+  widgets::text(gfx, theme::kPadding, barY + 16,
+                vol > Es8311::kUnityVolumePercent ? "boost — may distort loud audio"
+                                                  : "clean up to the mark",
+                widgets::TextStyle::Caption, theme::kTextDim);
+
+  const int16_t bw = (w - 16) / 3;
+  const int16_t rowY = barY + 44;
+  soundVolDownRect_ = widgets::button(gfx, theme::kPadding, rowY, bw, 50, "-", false);
+  soundVolUpRect_ = widgets::button(gfx, theme::kPadding + bw + 8, rowY, bw, 50, "+", false);
+  soundToneRect_ =
+      widgets::button(gfx, theme::kPadding + 2 * (bw + 8), rowY, bw, 50, "Test", true);
+
+  // ---- Microphone ----
+  y = rowY + 66;
+  gfx.drawFastHLine(theme::kPadding, y, w, theme::kPanelAlt);
+  y += 12;
+  snprintf(line, sizeof(line), "Mic gain  %u dB",
+           static_cast<unsigned>(settings->micGain()) * 6u);
+  widgets::text(gfx, theme::kPadding, y, line, widgets::TextStyle::Body, theme::kText);
+  soundGainDownRect_ = widgets::button(gfx, theme::kPadding + w - 2 * (bw / 2) - 8, y - 6,
+                                       bw / 2, 44, "-", false);
+  soundGainUpRect_ =
+      widgets::button(gfx, theme::kPadding + w - bw / 2, y - 6, bw / 2, 44, "+", false);
+
+  y += 54;
+  const int16_t toggleW = (w - 8) / 2;
+  soundNormalizeRect_ = widgets::button(gfx, theme::kPadding, y, toggleW, 50,
+                                        settings->recordNormalize() ? "Level: on" : "Level: off",
+                                        settings->recordNormalize());
+  soundGateRect_ = widgets::button(gfx, theme::kPadding + toggleW + 8, y, toggleW, 50,
+                                   settings->recordGate() ? "Gate: on" : "Gate: off",
+                                   settings->recordGate());
+  widgets::text(gfx, theme::kPadding, y + 58,
+                "Level lifts quiet takes; gate hushes the pauses.",
+                widgets::TextStyle::Caption, theme::kTextDim);
+}
+
+// Restart is one row away from Display and About; a misplaced tap used to
+// reboot the cube outright. Anything that can end an in-progress recording
+// gets a confirm — and says so.
+void SettingsApp::renderRestartConfirm(Arduino_GFX& gfx) {
+  const bool recording = services_.recorder != nullptr && services_.recorder->recording();
+  restartConfirmRect_ = widgets::modalConfirm(
+      gfx, "Restart cube?",
+      recording ? "A recording is running. Restarting now loses it."
+                : "The cube reboots. Wi-Fi reconnects on its own.",
+      restartCancelRect_);
 }
 
 void SettingsApp::renderWifi(Arduino_GFX& gfx) {
@@ -105,13 +279,23 @@ void SettingsApp::renderWifi(Arduino_GFX& gfx) {
   uint8_t count = 0;
   const WifiService::ScanResult* results =
       services_.wifi != nullptr ? services_.wifi->scanResults(count) : nullptr;
+  wifiNetworkCount_ = count;
+  // A rescan can shrink the list out from under the current page.
+  if (count > 0 && wifiPage_ * 4 >= count) {
+    wifiPage_ = 0;
+  }
   int16_t y = kTop + 126;
   for (uint8_t i = 0; i < 4; i++) {
     const uint8_t idx = wifiPage_ * 4 + i;
     if (results == nullptr || idx >= count) {
       wifiRowRects_[i] = widgets::Rect{};
+      wifiRowSsids_[i][0] = '\0';
       continue;
     }
+    // Remember what this row says; the tap handler must connect to the SSID
+    // the user saw, not to whatever occupies this slot by then.
+    strncpy(wifiRowSsids_[i], results[idx].ssid, sizeof(wifiRowSsids_[i]) - 1);
+    wifiRowSsids_[i][sizeof(wifiRowSsids_[i]) - 1] = '\0';
     char secondary[48];
     snprintf(secondary, sizeof(secondary), "%d dBm · %s%s", (int)results[idx].rssi,
              results[idx].secure ? "locked" : "open", results[idx].saved ? " · saved" : "");
@@ -270,6 +454,27 @@ void SettingsApp::renderDisplay(Arduino_GFX& gfx) {
   displayRects_[4] = widgets::button(gfx, theme::kPadding + w - 110, y - 8, 110, 46,
                                      settings->alwaysOn() ? "on" : "off",
                                      settings->alwaysOn());
+  y += 72;
+
+  // Only the on/off switch fits here; the window and its brightness stay at
+  // their defaults, shown below so the toggle is never a mystery.
+  gfx.setTextColor(theme::kTextDim);
+  gfx.setCursor(theme::kPadding, y);
+  gfx.print("Bedtime dim");
+  displayRects_[5] = widgets::button(gfx, theme::kPadding + w - 110, y - 8, 110, 46,
+                                     settings->bedtimeEnabled() ? "on" : "off",
+                                     settings->bedtimeEnabled());
+
+  char window[32];
+  snprintf(window, sizeof(window), "%02u:%02u-%02u:%02u at %u",
+           (unsigned)(settings->bedtimeStartMin() / 60),
+           (unsigned)(settings->bedtimeStartMin() % 60),
+           (unsigned)(settings->bedtimeEndMin() / 60),
+           (unsigned)(settings->bedtimeEndMin() % 60),
+           (unsigned)settings->bedtimeBrightness());
+  gfx.setTextColor(theme::kPanelAlt);
+  gfx.setCursor(theme::kPadding, y + 54);
+  gfx.print(window);
 }
 
 void SettingsApp::renderAbout(Arduino_GFX& gfx) {
@@ -308,22 +513,93 @@ bool SettingsApp::handleInput(const InputEvent& event) {
 
   switch (screen_) {
     case Screen::Root:
+      if (confirmRestart_) {
+        if (event.action == InputAction::Tap) {
+          if (restartConfirmRect_.contains(event.x, event.y)) {
+            Serial.println("restarting from Settings...");
+            Serial.flush();
+            delay(100);
+            ESP.restart();
+          }
+          confirmRestart_ = false;  // anything else, including Cancel, backs out
+          dirty_ = true;
+          return true;
+        }
+        if (back) {
+          confirmRestart_ = false;
+          dirty_ = true;
+        }
+        return true;  // absorb everything else while the modal is up
+      }
       if (event.action == InputAction::Tap) {
         if (rootRects_[0].contains(event.x, event.y)) {
           go(Screen::Wifi);
         } else if (rootRects_[1].contains(event.x, event.y)) {
           go(Screen::Display);
         } else if (rootRects_[2].contains(event.x, event.y)) {
-          go(Screen::About);
+          go(Screen::Themes);
         } else if (rootRects_[3].contains(event.x, event.y)) {
-          Serial.println("restarting from Settings...");
-          Serial.flush();
-          delay(100);
-          ESP.restart();
+          go(Screen::Sound);
+        } else if (rootRects_[4].contains(event.x, event.y)) {
+          go(Screen::About);
+        } else if (rootRects_[5].contains(event.x, event.y)) {
+          confirmRestart_ = true;
+          dirty_ = true;
         }
         return true;
       }
       return false;  // Back falls through to the router (home)
+
+    case Screen::Sound: {
+      if (back || event.action == InputAction::SwipeRight) {
+        go(Screen::Root);
+        return true;
+      }
+      if (event.action != InputAction::Tap || services_.settings == nullptr) {
+        return true;
+      }
+      SettingsService* settings = services_.settings;
+      AudioAdapter* audio = services_.audio;
+      if (soundVolDownRect_.contains(event.x, event.y) ||
+          soundVolUpRect_.contains(event.x, event.y)) {
+        const int step = soundVolUpRect_.contains(event.x, event.y) ? 5 : -5;
+        int next = static_cast<int>(settings->volumePercent()) + step;
+        next = next < 0 ? 0 : (next > 100 ? 100 : next);
+        settings->setVolumePercent(static_cast<uint8_t>(next));
+        if (audio != nullptr) {
+          audio->setVolumePercent(static_cast<uint8_t>(next));
+        }
+      } else if (soundToneRect_.contains(event.x, event.y)) {
+        // playTone() refuses while a capture or playback owns the codec, so a
+        // stray tap during a recording cannot cut the take short.
+        if (audio != nullptr) {
+          audio->playTone(880, 400);
+        }
+      } else if (soundGainDownRect_.contains(event.x, event.y) ||
+                 soundGainUpRect_.contains(event.x, event.y)) {
+        const int step = soundGainUpRect_.contains(event.x, event.y) ? 1 : -1;
+        int next = static_cast<int>(settings->micGain()) + step;
+        next = next < 0 ? 0 : (next > 7 ? 7 : next);
+        settings->setMicGain(static_cast<uint8_t>(next));
+        if (audio != nullptr && !audio->isRecording()) {
+          audio->setMicGain(static_cast<uint8_t>(next));  // codec is live: never mid-take
+        }
+      } else if (soundNormalizeRect_.contains(event.x, event.y)) {
+        const bool on = !settings->recordNormalize();
+        settings->setRecordNormalize(on);
+        if (audio != nullptr) {
+          audio->setRecordNormalize(on);
+        }
+      } else if (soundGateRect_.contains(event.x, event.y)) {
+        const bool on = !settings->recordGate();
+        settings->setRecordGate(on);
+        if (audio != nullptr) {
+          audio->setRecordGate(on);
+        }
+      }
+      dirty_ = true;
+      return true;
+    }
 
     case Screen::Wifi:
       if (back || event.action == InputAction::SwipeRight) {
@@ -331,9 +607,10 @@ bool SettingsApp::handleInput(const InputEvent& event) {
         return true;
       }
       if (event.action == InputAction::SwipeUp || event.action == InputAction::SwipeDown) {
-        uint8_t count = 0;
-        services_.wifi->scanResults(count);
-        const uint8_t pages = count == 0 ? 1 : (count + 3) / 4;
+        // Page against what was rendered, not against a live re-read: paging
+        // past the end of the visible list is the same staleness bug as
+        // tapping the wrong row.
+        const uint8_t pages = wifiNetworkCount_ == 0 ? 1 : (wifiNetworkCount_ + 3) / 4;
         if (event.action == InputAction::SwipeUp && wifiPage_ + 1 < pages) {
           wifiPage_++;
         } else if (event.action == InputAction::SwipeDown && wifiPage_ > 0) {
@@ -354,12 +631,9 @@ bool SettingsApp::handleInput(const InputEvent& event) {
           go(Screen::SetupMode);
           return true;
         }
-        uint8_t count = 0;
-        const WifiService::ScanResult* results = services_.wifi->scanResults(count);
         for (uint8_t i = 0; i < 4; i++) {
-          const uint8_t idx = wifiPage_ * 4 + i;
-          if (idx < count && wifiRowRects_[i].contains(event.x, event.y)) {
-            strncpy(chosenSsid_, results[idx].ssid, sizeof(chosenSsid_) - 1);
+          if (wifiRowSsids_[i][0] != '\0' && wifiRowRects_[i].contains(event.x, event.y)) {
+            strncpy(chosenSsid_, wifiRowSsids_[i], sizeof(chosenSsid_) - 1);
             chosenSsid_[sizeof(chosenSsid_) - 1] = '\0';
             go(Screen::WifiMethod);
             return true;
@@ -408,10 +682,11 @@ bool SettingsApp::handleInput(const InputEvent& event) {
             displayRects_[1].contains(event.x, event.y)) {
           const int step = displayRects_[1].contains(event.x, event.y) ? 16 : -16;
           int next = static_cast<int>(settings->brightness()) + step;
-          if (next < 16) next = 16;
-          if (next > 255) next = 255;
+          if (next < MIN_BRIGHTNESS) next = MIN_BRIGHTNESS;
+          if (next > MAX_BRIGHTNESS) next = MAX_BRIGHTNESS;
+          // Setting only — AmoledProtection owns the panel and follows within
+          // a frame. Two writers would fight over dim and blank.
           settings->setBrightness(static_cast<uint8_t>(next));
-          services_.display->setBrightness(static_cast<uint8_t>(next));
           dirty_ = true;
         } else if (displayRects_[2].contains(event.x, event.y) ||
                    displayRects_[3].contains(event.x, event.y)) {
@@ -432,10 +707,16 @@ bool SettingsApp::handleInput(const InputEvent& event) {
         } else if (displayRects_[4].contains(event.x, event.y)) {
           settings->setAlwaysOn(!settings->alwaysOn());
           dirty_ = true;
+        } else if (displayRects_[5].contains(event.x, event.y)) {
+          settings->setBedtimeEnabled(!settings->bedtimeEnabled());
+          dirty_ = true;
         }
         return true;
       }
       return false;
+
+    case Screen::Themes:
+      return handleThemes(event);
 
     case Screen::About:
       if (back || event.action == InputAction::SwipeRight || event.action == InputAction::Tap) {

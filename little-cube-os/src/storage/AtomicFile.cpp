@@ -24,6 +24,12 @@ bool writeAll(fs::FS& fs, const char* path, const uint8_t* data, size_t length) 
   if (path == nullptr || (data == nullptr && length > 0)) {
     return false;
   }
+  // Repair any wreckage from an interrupted earlier write BEFORE touching
+  // this path. Without this, a power cut between the two renames below leaves
+  // the only copy of the file as <path>.bak, and the next write here would
+  // delete it (step "remove(bak)") — losing the note permanently.
+  cleanupSiblings(fs, path);
+
   const String tmp = sibling(path, ".tmp");
   const String bak = sibling(path, ".bak");
 
@@ -98,8 +104,23 @@ bool finalizePartial(fs::FS& fs, const char* path) {
   if (!fs.exists(partial)) {
     return false;
   }
-  fs.remove(path);
-  return fs.rename(partial, path);
+  // Rename first, and only drop the previous target if that succeeded. The
+  // reverse order (remove-then-rename) destroys the old file even when the
+  // rename then fails, which is the opposite of what this module promises.
+  if (fs.rename(partial, path)) {
+    return true;
+  }
+  const String old = sibling(path, ".old");
+  fs.remove(old);
+  if (!fs.rename(path, old)) {
+    return false;  // cannot clear the way; the data is still in .partial
+  }
+  if (fs.rename(partial, path)) {
+    fs.remove(old);
+    return true;
+  }
+  fs.rename(old, path);  // put the previous file back
+  return false;
 }
 
 }  // namespace AtomicFile

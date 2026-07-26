@@ -27,6 +27,7 @@ class OpenMeteoWeatherService : public WeatherService {
 
   void loadCache();
   void saveCache();
+  void backOff();
 
   SettingsService* settings_ = nullptr;
   WifiService* wifi_ = nullptr;
@@ -43,5 +44,6 @@ class OpenMeteoWeatherService : public WeatherService {
   bool didGeocode_ = false;
 
   uint32_t sinceFetchMs_ = 0;
+  uint32_t retryDelayMs_ = 0;  // 0 = no failure pending; else the current backoff
   bool everFetched_ = false;
 };

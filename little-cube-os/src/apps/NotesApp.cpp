@@ -5,11 +5,61 @@
 #include "../board_config.h"
 #include "../core/SystemState.h"
 #include "../hardware/DisplayAdapter.h"
+#include "../ui/AmoledProtection.h"
 #include "../ui/Theme.h"
 
 namespace {
 constexpr int16_t kContentTop = theme::kStatusBarHeight + 44;
 constexpr int16_t kScrollStep = 280;
+constexpr int16_t kTruncBarH = 28;
+
+// Mirrors of widgets::textBlock's geometry. Keep these in step with
+// ui/widgets/Widgets.cpp — the scroll bound is only right if the count below
+// reproduces that function exactly.
+constexpr int16_t kWrapCharW = 6;    // base GFX cell, multiplied by text size
+constexpr int16_t kWrapCharH = 8;
+constexpr int16_t kWrapLineMax = 95;  // its internal line[96], minus the NUL
+
+int16_t charsPerLineFor(uint8_t fontSize) {
+  return (DISPLAY_WIDTH - 2 * theme::kPadding) / (kWrapCharW * fontSize);
+}
+
+// A faithful replay of widgets::textBlock's greedy wrap, counting lines
+// instead of drawing them. The old estimate (length / charsPerLine + 8)
+// ignored that textBlock also breaks on '\n' and at the last space that
+// fits, so a note of many short lines produced far more lines than the
+// estimate — and the tail was pinned below the bottom of the screen with no
+// way to scroll to it.
+int32_t countWrappedLines(const char* text, int16_t charsPerLine) {
+  if (text == nullptr || charsPerLine <= 0) {
+    return 0;
+  }
+  int32_t lines = 0;
+  const char* p = text;
+  while (*p != '\0') {
+    int16_t take = 0;
+    int16_t lastSpace = -1;
+    while (p[take] != '\0' && p[take] != '\n' && take < charsPerLine && take < kWrapLineMax) {
+      if (p[take] == ' ') {
+        lastSpace = take;
+      }
+      take++;
+    }
+    int16_t lineLen = take;
+    if (p[take] != '\0' && p[take] != '\n' && lastSpace > 0) {
+      lineLen = lastSpace;
+    }
+    lines++;
+    p += lineLen;
+    while (*p == ' ') {
+      p++;
+    }
+    if (*p == '\n') {
+      p++;
+    }
+  }
+  return lines;
+}
 }  // namespace
 
 void NotesApp::onOpen() {
@@ -18,11 +68,57 @@ void NotesApp::onOpen() {
   dirty_ = true;
 }
 
+void NotesApp::onPause() {
+  // Never leave a delete confirm armed across a background trip: it would be
+  // sitting under the user's first tap when they come back.
+  if (mode_ == Mode::ConfirmDelete) {
+    mode_ = Mode::List;
+    dirty_ = true;
+  }
+}
+
+void NotesApp::onResume() {
+  // Serial `notes new`/`notes delete` and an SD remount both mutate the list
+  // while this app is backgrounded, and deleting renumbers everything after
+  // the hole — so the cached array and openIndex_ can each be stale.
+  refreshList();
+  if (openIndex_ >= noteCount_) {
+    openIndex_ = 0;
+    mode_ = Mode::List;  // renderReading() would index past the end
+  }
+  dirty_ = true;
+}
+
+void NotesApp::onClose() {
+  // body_ is up to 12 KB of heap held for an app the user has left; the next
+  // visit re-reads from the card anyway.
+  body_ = String();
+  bodyTruncated_ = false;
+  wrappedLines_ = 0;
+  scrollY_ = 0;
+  mode_ = Mode::List;
+}
+
 void NotesApp::refreshList() {
-  noteCount_ = services_.notes != nullptr ? services_.notes->list(notes_, kMaxNotes) : 0;
+  noteCount_ =
+      services_.notes != nullptr ? services_.notes->list(notes_, kMaxNotes, &noteTotal_) : 0;
   if (pageStart_ >= noteCount_) {
     pageStart_ = 0;
   }
+}
+
+void NotesApp::measureBody() {
+  wrappedLines_ = countWrappedLines(body_.c_str(), charsPerLineFor(fontSize_));
+}
+
+int32_t NotesApp::maxScroll() const {
+  const int32_t lineH = kWrapCharH * fontSize_ + 2;
+  // The truncation warning sits in its own strip, so the last line has to
+  // clear it or it can never be read.
+  const int32_t viewH =
+      DISPLAY_HEIGHT - kContentTop - (bodyTruncated_ ? kTruncBarH : 0);
+  const int32_t over = wrappedLines_ * lineH - viewH;
+  return over > 0 ? over : 0;
 }
 
 bool NotesApp::openNote(size_t index) {
@@ -33,6 +129,7 @@ bool NotesApp::openNote(size_t index) {
     body_ = "(could not read note)";
     bodyTruncated_ = false;
   }
+  measureBody();  // once per note, not once per frame
   openIndex_ = index;
   scrollY_ = 0;
   mode_ = Mode::Reading;
@@ -54,7 +151,8 @@ void NotesApp::render() {
   }
   Arduino_GFX& gfx = *display->canvas();
   gfx.fillScreen(theme::kBg);
-  statusBar_.render(gfx, state, 0, 0);
+  statusBar_.render(gfx, state, services_.amoled->shiftX(),
+                    services_.amoled->shiftY());
 
   switch (mode_) {
     case Mode::List:
@@ -72,8 +170,15 @@ void NotesApp::render() {
 }
 
 void NotesApp::renderList(Arduino_GFX& gfx) {
-  char header[32];
-  snprintf(header, sizeof(header), "Notes (%u)", (unsigned)noteCount_);
+  // "Notes (48)" on a card holding 132 of them is a lie by omission — the
+  // cap is real, so name it.
+  char header[40];
+  if (noteTotal_ > noteCount_) {
+    snprintf(header, sizeof(header), "Notes (%u of %u)", (unsigned)noteCount_,
+             (unsigned)noteTotal_);
+  } else {
+    snprintf(header, sizeof(header), "Notes (%u)", (unsigned)noteCount_);
+  }
   gfx.setTextSize(theme::kTextSizeBody);
   gfx.setTextColor(theme::kText);
   gfx.setCursor(theme::kPadding, theme::kStatusBarHeight + 12);
@@ -109,9 +214,15 @@ void NotesApp::renderList(Arduino_GFX& gfx) {
     y += 62;
   }
 
-  char pager[40];
-  snprintf(pager, sizeof(pager), "%u-%u of %u   swipe up/down", (unsigned)(pageStart_ + 1),
-           (unsigned)min(pageStart_ + kPageSize, noteCount_), (unsigned)noteCount_);
+  char pager[48];
+  if (noteTotal_ > noteCount_) {
+    snprintf(pager, sizeof(pager), "%u-%u of %u  +%u more", (unsigned)(pageStart_ + 1),
+             (unsigned)min(pageStart_ + kPageSize, noteCount_), (unsigned)noteCount_,
+             (unsigned)(noteTotal_ - noteCount_));
+  } else {
+    snprintf(pager, sizeof(pager), "%u-%u of %u   swipe up/down", (unsigned)(pageStart_ + 1),
+             (unsigned)min(pageStart_ + kPageSize, noteCount_), (unsigned)noteCount_);
+  }
   gfx.setTextSize(theme::kTextSizeSmall);
   gfx.setTextColor(theme::kTextDim);
   gfx.setCursor(theme::kPadding, DISPLAY_HEIGHT - 28);
@@ -136,11 +247,16 @@ void NotesApp::renderReading(Arduino_GFX& gfx) {
                      DISPLAY_WIDTH - 2 * theme::kPadding, body_.c_str(), fontSize_,
                      theme::kText);
 
-  if (bodyTruncated_ && scrollY_ == 0) {
+  if (bodyTruncated_) {
+    // Shown at every scroll position, not just the top. The warning matters
+    // most when the reader reaches the end and wonders why it stops there —
+    // which is exactly where it used to have vanished. It needs its own
+    // opaque strip because the body scrolls underneath it.
+    gfx.fillRect(0, DISPLAY_HEIGHT - kTruncBarH, DISPLAY_WIDTH, kTruncBarH, theme::kBg);
     gfx.setTextSize(theme::kTextSizeSmall);
     gfx.setTextColor(theme::kWarn);
-    gfx.setCursor(theme::kPadding, DISPLAY_HEIGHT - 28);
-    gfx.print("(long note truncated on device)");
+    gfx.setCursor(theme::kPadding, DISPLAY_HEIGHT - kTruncBarH + 6);
+    gfx.print("note truncated on device");
   }
 }
 
@@ -193,15 +309,13 @@ bool NotesApp::handleList(const InputEvent& event) {
 bool NotesApp::handleReading(const InputEvent& event) {
   switch (event.action) {
     case InputAction::SwipeUp: {
-      // Rough content height from wrapped-line count keeps the scroll
-      // bounded without measuring every frame.
-      const int16_t charsPerLine = (DISPLAY_WIDTH - 2 * theme::kPadding) / (6 * fontSize_);
-      const int32_t roughLines = charsPerLine > 0
-                                     ? static_cast<int32_t>(body_.length()) / charsPerLine + 8
-                                     : 8;
-      const int32_t maxScroll = roughLines * (8 * fontSize_ + 2) - (DISPLAY_HEIGHT - kContentTop);
-      if (scrollY_ < maxScroll) {
-        scrollY_ += kScrollStep;
+      // Bound comes from the cached line count measured in openNote(), and
+      // the last step is clamped so the final line lands flush with the
+      // bottom instead of overshooting past it.
+      const int32_t limit = maxScroll();
+      if (scrollY_ < limit) {
+        const int32_t next = static_cast<int32_t>(scrollY_) + kScrollStep;
+        scrollY_ = static_cast<int16_t>(next > limit ? limit : next);
         dirty_ = true;
       }
       return true;
@@ -224,6 +338,7 @@ bool NotesApp::handleReading(const InputEvent& event) {
       return true;
     case InputAction::DoubleTap:
       fontSize_ = fontSize_ == 2 ? 3 : 2;
+      measureBody();  // a different font wraps to a different line count
       scrollY_ = 0;
       dirty_ = true;
       return true;

@@ -54,16 +54,17 @@ struct Coeff {
 };
 
 constexpr Coeff kCoeffs[] = {
-    {4096000, 16000, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x20},
-    {2048000, 8000, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x20},
+    {4096000, 16000, 0x01, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {2048000, 8000, 0x01, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
     {5644800, 22050, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
-    {8192000, 32000, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
-    {11289600, 44100, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
-    {12288000, 48000, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {8192000, 32000, 0x01, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {11289600, 44100, 0x01, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {12288000, 48000, 0x01, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
 };
 
 TwoWire* g_wire = &Wire;
 uint8_t g_addr = 0x18;
+uint8_t g_adcGain = 0x07;  // REG16 setting; re-applied on every init()
 
 bool writeReg(uint8_t reg, uint8_t val) {
   g_wire->beginTransmission(g_addr);
@@ -91,14 +92,7 @@ const Coeff* findCoeff(uint32_t rate) {
 void configSample(const Coeff& c) {
   uint8_t regv = readReg(REG02) & 0x07;
   regv |= (c.pre_div - 1) << 5;
-  uint8_t datmp = 0;
-  switch (c.pre_multi) {
-    case 2: datmp = 1; break;
-    case 4: datmp = 2; break;
-    case 8: datmp = 3; break;
-    default: datmp = 0; break;
-  }
-  regv |= datmp << 3;
+  regv |= c.pre_multi << 3;
   writeReg(REG02, regv);
 
   regv = 0;
@@ -145,21 +139,12 @@ bool init(TwoWire& wire, uint8_t addr, uint32_t sampleRate) {
   const Coeff* c = findCoeff(sampleRate);
   if (!c) c = findCoeff(16000);  // fall back to a known-good rate
 
-  // I2C noise immunity (written twice per esp-adf note).
-  writeReg(REG44, 0x08);
-  writeReg(REG44, 0x08);
-
-  writeReg(REG01, 0x30);
-  writeReg(REG02, 0x00);
-  writeReg(REG03, 0x10);
-  writeReg(REG16, 0x24);
-  writeReg(REG04, 0x10);
-  writeReg(REG05, 0x00);
-  writeReg(REG0B, 0x00);
-  writeReg(REG0C, 0x00);
-  writeReg(REG10, 0x1F);
-  writeReg(REG11, 0x7F);
-  writeReg(REG00, 0x80);  // reset, then slave mode (bit6 = 0)
+  // Exact reset sequence used by Waveshare's ES8311 example for this board.
+  // Do not carry over ADF's REG44 DAC-to-ADC routing: it is not part of the
+  // board vendor's analog-mic path and leaves audible broadband buzz here.
+  writeReg(REG00, 0x1F);
+  writeReg(REG00, 0x00);
+  writeReg(REG00, 0x80);
 
   uint8_t regv = readReg(REG00);
   regv &= 0xBF;  // slave mode
@@ -178,31 +163,28 @@ bool init(TwoWire& wire, uint8_t addr, uint32_t sampleRate) {
   regv = readReg(REG06) & ~0x20;
   writeReg(REG06, regv);
 
-  writeReg(REG13, 0x10);
-  writeReg(REG1B, 0x0A);
-  writeReg(REG1C, 0x6A);
+  // The board vendor's exact 1.8-inch AMOLED example explicitly selects
+  // 16-bit I2S on both serial ports.  Leaving these at reset values (or only
+  // clearing their enable bit) lets the ADC frame at a different word length
+  // from the ESP32-S3 RX DMA, which produces broadband buzz instead of voice.
+  // https://github.com/waveshareteam/ESP32-S3-Touch-AMOLED-1.8/
+  writeReg(REG09, 0x0C);  // DAC serial port: I2S, 16-bit
+  writeReg(REG0A, 0x0C);  // ADC serial port: I2S, 16-bit
 
-  // ---- start ADC + DAC (es8311_start, ES_MODULE_ADC_DAC) ----
-  uint8_t dac_iface = readReg(REG09) & 0xBF;
-  uint8_t adc_iface = readReg(REG0A) & 0xBF;
-  // both directions active (clear bit6 on each)
-  writeReg(REG09, dac_iface);
-  writeReg(REG0A, adc_iface);
-
-  writeReg(REG17, 0xBF);
+  // Keep the vendor analog-mic path and digital volume. The isolated official
+  // capture peaked at only 348 with the example's 18 dB setting, so use the
+  // codec's 42 dB setting to bring normal speech into a useful PCM range.
+  writeReg(REG17, 0xC8);
+  writeReg(REG0D, 0x01);
   writeReg(REG0E, 0x02);
   writeReg(REG12, 0x00);
-  writeReg(REG14, 0x1A);  // analog mic, default PGA
-
-  // Analog microphone (not DMIC): clear bit6 of REG14.
-  regv = readReg(REG14) & ~0x40;
-  writeReg(REG14, regv);
-
-  writeReg(REG0D, 0x01);
-  writeReg(REG15, 0x40);
+  writeReg(REG13, 0x10);
+  writeReg(REG1C, 0x6A);
   writeReg(REG37, 0x08);
-  writeReg(REG45, 0x00);
-  writeReg(REG44, 0x58);  // internal reference (ADCL + DACR)
+
+  writeReg(REG14, 0x1A);  // analog mic, max PGA (DMIC bit clear)
+  writeReg(REG16, g_adcGain);  // ADC gain, 6 dB steps (default 42 dB) — runtime
+                               // tunable via `recordings gain` for SNR work
 
   setVolume(70);
   return true;
@@ -210,14 +192,44 @@ bool init(TwoWire& wire, uint8_t addr, uint32_t sampleRate) {
 
 void setVolume(uint8_t percent) {
   if (percent > 100) percent = 100;
-  // 0xBF == 0 dB; scale linearly up to it.
-  const uint8_t reg = static_cast<uint8_t>((static_cast<uint16_t>(percent) * 0xBF) / 100);
-  writeReg(REG32, reg);
+  // REG32 steps 0.5 dB and runs to 0xFF, but 0xBF is exactly 0 dB — so the
+  // previous map, which topped out at 0xBF, left the speaker with no headroom
+  // above unity at all. The curve is now piecewise:
+  //
+  //   0%        -> hard mute
+  //   1..80%    -> -40 dB .. 0 dB   (clean; 80% is unity)
+  //   81..100%  -> 0 dB .. +10 dB   (boost)
+  //
+  // Above kUnityVolumePercent the gain is DIGITAL, so it clips content that is
+  // already near full scale. That is a deliberate trade: TTS replies and voice
+  // notes sit well below full scale and gain real loudness, and the Sound
+  // screen marks unity so the boost is a choice rather than a surprise.
+  if (percent == 0) {
+    writeReg(REG32, 0x00);
+    return;
+  }
+  int16_t halfDb;  // in 0.5 dB steps relative to 0 dB
+  if (percent <= kUnityVolumePercent) {
+    halfDb = static_cast<int16_t>(-80 + (static_cast<int32_t>(percent) * 80) /
+                                            kUnityVolumePercent);
+  } else {
+    halfDb = static_cast<int16_t>((static_cast<int32_t>(percent - kUnityVolumePercent) * 20) /
+                                  (100 - kUnityVolumePercent));
+  }
+  int16_t reg = static_cast<int16_t>(0xBF) + halfDb;
+  if (reg < 0x01) reg = 0x01;
+  if (reg > 0xFF) reg = 0xFF;
+  writeReg(REG32, static_cast<uint8_t>(reg));
 }
 
 void setMicGain(uint8_t gain) {
   if (gain > 7) gain = 7;
+  g_adcGain = gain;
   writeReg(REG16, gain);
+}
+
+uint8_t micGain() {
+  return g_adcGain;
 }
 
 void mute(bool muted) {

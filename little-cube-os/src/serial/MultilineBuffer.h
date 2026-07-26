@@ -9,7 +9,9 @@
 //   .PREVIEW  echo    |  .CLEAR   restart
 // Content streams to an SD temp file as it arrives — RAM holds one line at
 // a time — and lands on the target via an atomic backup-rename on save.
-// Total input is capped at kMaxBytes.
+// Total input is capped at kMaxBytes. Only .CANCEL deletes the temp file:
+// every failure path keeps it, so a save into a missing directory (or onto a
+// full card) never silently swallows what the user typed.
 class MultilineBuffer {
  public:
   enum class Result {
@@ -27,12 +29,15 @@ class MultilineBuffer {
   bool active() const { return active_; }
   Result feedLine(const char* line);
   const char* targetPath() const { return targetPath_.c_str(); }
+  // After Result::Error: the surviving temp file holding everything typed
+  // (`files cat <path>` recovers it), or nullptr when nothing was kept.
+  const char* recoveryPath() const { return tempKept_ ? tempPath_.c_str() : nullptr; }
   size_t bytes() const { return bytes_; }
 
   static constexpr size_t kMaxBytes = 64 * 1024;
 
  private:
-  void abort();
+  void abort(bool removeTemp);
   Result finish();
 
   fs::FS* fs_ = nullptr;
@@ -42,4 +47,5 @@ class MultilineBuffer {
   SaveMode mode_ = SaveMode::Overwrite;
   size_t bytes_ = 0;
   bool active_ = false;
+  bool tempKept_ = false;  // an error left the temp file on disk
 };

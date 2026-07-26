@@ -12,6 +12,17 @@ namespace {
 std::shared_ptr<Arduino_IIC_DriveBus> touchBus;
 std::unique_ptr<Arduino_FT3x68> touchDevice;
 
+// INT edge latch. The ISR catches every FT3168 interrupt regardless of loop
+// cadence, so a tap can never be missed between polls; the counter feeds
+// `input status` so a unit's INT wiring can be verified from serial.
+volatile bool s_touchIntFlag = false;
+volatile uint32_t s_touchIntCount = 0;
+
+void IRAM_ATTR touchIntIsr() {
+  s_touchIntFlag = true;
+  s_touchIntCount = s_touchIntCount + 1;
+}
+
 // Raw FT3168 coordinates map 1:1 to SH8601 screen pixels at rotation 0 —
 // clamp only, never swap axes (swapped Cardputer ports had to be patched
 // back to identity on this board).
@@ -39,6 +50,10 @@ bool InputAdapter::begin() {
       touchDevice->IIC_Write_Device_State(
           touchDevice->Arduino_IIC_Touch::Device::TOUCH_POWER_MODE,
           touchDevice->Arduino_IIC_Touch::Device_Mode::TOUCH_POWER_MONITOR);
+      // INT-gated polling (see header). FALLING catches both level-hold and
+      // per-report pulse INT modes; the pullup keeps an open-drain line sane.
+      pinMode(PIN_TOUCH_INT, INPUT_PULLUP);
+      attachInterrupt(digitalPinToInterrupt(PIN_TOUCH_INT), touchIntIsr, FALLING);
       Serial.printf("[touch] FT3168 init ok id=0x%X\n",
                     static_cast<unsigned>(touchDevice->IIC_Read_Device_ID()));
       touchReady_ = true;
@@ -75,11 +90,45 @@ InputEvent InputAdapter::makeEvent(InputAction action, int16_t x, int16_t y) {
   event.x = x;
   event.y = y;
   event.timestampMs = millis();
-  Serial.printf("[input] %s at (%d,%d)\n", inputActionName(action), x, y);
+  // Off by default: this is a USB-CDC write on the input path, so a host that
+  // holds the port open without draining it stalls every gesture. Toggle it
+  // with `input debug on` when diagnosing touch.
+  if (debugLog_) {
+    Serial.printf("[input] %s at (%d,%d)\n", inputActionName(action), x, y);
+  }
   return event;
 }
 
+uint32_t InputAdapter::touchIntEdges() const {
+  return s_touchIntCount;
+}
+
 bool InputAdapter::pollTouch(InputEvent& out) {
+  if (!touchReady_) {
+    return false;
+  }
+  // I2C-silent idle (see header): read the controller only while a touch
+  // session is in flight or the INT line reports fresh contact.
+  bool wantRead = touchWasDown_;
+  if (s_touchIntFlag) {
+    s_touchIntFlag = false;
+    intSeen_ = true;
+    wantRead = true;
+  }
+  if (!wantRead && digitalRead(PIN_TOUCH_INT) == LOW) {
+    wantRead = true;  // level backstop: INT still asserted or edge lost
+  }
+  if (!wantRead && !intSeen_ && !fallbackSuppressed_) {
+    // INT unproven on this unit: slow timed polling so touch cannot go dead.
+    const uint32_t nowMs = millis();
+    if (nowMs - lastFallbackPollMs_ >= TOUCH_INT_FALLBACK_POLL_MS) {
+      lastFallbackPollMs_ = nowMs;
+      wantRead = true;
+    }
+  }
+  if (!wantRead) {
+    return false;
+  }
   uint16_t x = 0;
   uint16_t y = 0;
   const bool down = readTouch(x, y);

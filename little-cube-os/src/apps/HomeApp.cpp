@@ -8,6 +8,7 @@
 #include "../hardware/DisplayAdapter.h"
 #include "../services/SettingsService.h"
 #include "../services/WifiService.h"
+#include "../ui/AmoledProtection.h"
 #include "../ui/Theme.h"
 
 namespace {
@@ -35,7 +36,10 @@ void HomeApp::update(uint32_t deltaMs) {
 void HomeApp::render() {
   const SystemState& state = *services_.state;
   const bool stateChanged = state.version != lastStateVersion_;
-  if (!forceRedraw_ && !stateChanged && !carousel_.animating()) {
+  // consumeSettled() must be evaluated, not short-circuited away, or the
+  // final settled frame is never drawn.
+  const bool justSettled = carousel_.consumeSettled();
+  if (!forceRedraw_ && !stateChanged && !carousel_.animating() && !justSettled) {
     return;
   }
   lastStateVersion_ = state.version;
@@ -47,7 +51,8 @@ void HomeApp::render() {
   }
   Arduino_GFX& gfx = *display->canvas();
   gfx.fillScreen(theme::kBg);
-  statusBar_.render(gfx, state, 0, 0);
+  statusBar_.render(gfx, state, services_.amoled->shiftX(),
+                    services_.amoled->shiftY());
 
   switch (mode_) {
     case Mode::Cards:
@@ -157,6 +162,9 @@ void HomeApp::renderQuickActions(Arduino_GFX& gfx) {
   brightnessUp_ = widgets::button(gfx, theme::kPadding + w - 64, y + 28, 64, 56, "+", false);
   y += 116;
 
+  // button() leaves the canvas at text size 1 (widgets restore the built-in
+  // font but not the size), so re-assert the label size after the +/- pair.
+  gfx.setTextSize(theme::kTextSizeSmall);
   gfx.setTextColor(theme::kTextDim);
   gfx.setCursor(theme::kPadding, y);
   gfx.print("Volume");
@@ -167,6 +175,7 @@ void HomeApp::renderQuickActions(Arduino_GFX& gfx) {
   volumeDown_ = widgets::button(gfx, theme::kPadding, y + 28, 64, 56, "-", false);
   volumeUp_ = widgets::button(gfx, theme::kPadding + w - 64, y + 28, 64, 56, "+", false);
 
+  gfx.setTextSize(theme::kTextSizeSmall);  // same reason: button() left size 1
   gfx.setTextColor(theme::kTextDim);
   gfx.setCursor(theme::kPadding, DISPLAY_HEIGHT - 32);
   gfx.print("swipe down / BOOT = back");
@@ -230,12 +239,12 @@ bool HomeApp::handleQuickActions(const InputEvent& event) {
     if (brightnessDown_.contains(event.x, event.y) || brightnessUp_.contains(event.x, event.y)) {
       const int step = brightnessUp_.contains(event.x, event.y) ? 16 : -16;
       int next = static_cast<int>(settings->brightness()) + step;
-      if (next < 16) next = 16;  // never fully dark from the quick panel
-      if (next > 255) next = 255;
+      if (next < MIN_BRIGHTNESS) next = MIN_BRIGHTNESS;  // never fully dark from here
+      if (next > MAX_BRIGHTNESS) next = MAX_BRIGHTNESS;
+      // Setting only. AmoledProtection is the sole writer to the panel and
+      // picks this up within a frame; poking the display here too would race
+      // it over every dim and blank transition.
       settings->setBrightness(static_cast<uint8_t>(next));
-      if (services_.display != nullptr) {
-        services_.display->setBrightness(static_cast<uint8_t>(next));
-      }
       forceRedraw_ = true;
       return true;
     }

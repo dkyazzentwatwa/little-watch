@@ -7,6 +7,7 @@
 #include "../hardware/DisplayAdapter.h"
 #include "../services/TimeService.h"
 #include "../services/WeatherService.h"
+#include "../ui/AmoledProtection.h"
 #include "../ui/Theme.h"
 
 namespace {
@@ -27,7 +28,8 @@ void WeatherApp::render() {
   }
   Arduino_GFX& gfx = *display->canvas();
   gfx.fillScreen(theme::kBg);
-  statusBar_.render(gfx, state, 0, 0);
+  statusBar_.render(gfx, state, services_.amoled->shiftX(),
+                    services_.amoled->shiftY());
 
   const WeatherSnapshot* wx =
       services_.weather != nullptr ? &services_.weather->snapshot() : nullptr;

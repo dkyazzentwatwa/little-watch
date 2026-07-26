@@ -34,6 +34,7 @@ enum class SystemEvent {
   BackupFailed,
 
   WeatherUpdated,
+  NewsUpdated,
   TimeSynced,
   SettingsChanged,
 };

@@ -1,6 +1,7 @@
 #include "AppRegistry.h"
 
 #include "../core/AppRouter.h"
+#include "AssistantApp.h"
 #include "AudioApp.h"
 #include "CalculatorApp.h"
 #include "CalendarApp.h"
@@ -8,7 +9,9 @@
 #include "ContactsApp.h"
 #include "FilesApp.h"
 #include "HomeApp.h"
+#include "NewsApp.h"
 #include "NotesApp.h"
+#include "ReaderApp.h"
 #include "RecorderApp.h"
 #include "SettingsApp.h"
 #include "TodayApp.h"
@@ -22,11 +25,14 @@ void registerApps(AppRouter& router, Services& services) {
   static CalendarApp calendar(services);
   static NotesApp notes(services);
   static RecorderApp recorder(services);
+  static AssistantApp assistant(services);
   static AudioApp audio(services);
   static FilesApp files(services);
   static ContactsApp contacts(services);
   static CalculatorApp calculator(services);
   static SettingsApp settings(services);
+  static ReaderApp reader(services);
+  static NewsApp news(services);
 
   router.registerApp(AppId::Home, &home);
   router.registerApp(AppId::Today, &today);
@@ -35,9 +41,12 @@ void registerApps(AppRouter& router, Services& services) {
   router.registerApp(AppId::Calendar, &calendar);
   router.registerApp(AppId::Notes, &notes);
   router.registerApp(AppId::Recorder, &recorder);
+  router.registerApp(AppId::Assistant, &assistant);
   router.registerApp(AppId::Audio, &audio);
   router.registerApp(AppId::Files, &files);
   router.registerApp(AppId::Contacts, &contacts);
   router.registerApp(AppId::Calculator, &calculator);
   router.registerApp(AppId::Settings, &settings);
+  router.registerApp(AppId::Reader, &reader);
+  router.registerApp(AppId::News, &news);
 }

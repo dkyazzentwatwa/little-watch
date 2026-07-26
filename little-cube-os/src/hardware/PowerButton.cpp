@@ -10,6 +10,18 @@ PowerButton::Press PowerButton::poll() {
   const bool down = digitalRead(PIN_BOOT_BUTTON) == (BOOT_BUTTON_ACTIVE_LOW ? LOW : HIGH);
   const uint32_t now = millis();
 
+  // Tactile switches bounce for 1-10 ms and this is sampled twice per frame,
+  // so an undebounced edge turns one physical tap into two or three Back
+  // actions and throws the user several screens up the stack.
+  if (down != lastRawDown_) {
+    lastRawDown_ = down;
+    lastEdgeMs_ = now;
+    return Press::None;
+  }
+  if ((now - lastEdgeMs_) < kDebounceMs) {
+    return Press::None;  // level has not settled yet
+  }
+
   if (down && !wasDown_) {
     wasDown_ = true;
     longFired_ = false;

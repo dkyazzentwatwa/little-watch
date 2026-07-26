@@ -46,3 +46,11 @@ docs/                  product spec + design docs + hardware validation
 Under active development. See `docs/product-spec.md` for the full
 specification and `docs/hardware-validation.md` for what has actually been
 verified on hardware (nothing is marked done without physical testing).
+
+| Doc | What it covers |
+|---|---|
+| `docs/product-spec.md` | the contract; code cites it as "spec §N" |
+| `docs/arduino-cli-setup.md` | toolchain, FQBN, libraries, the 1200-baud upload quirk |
+| `docs/serial-interface.md` | every implemented serial command, multiline entry, the Wi-Fi prompt |
+| `docs/amoled-protection.md` | spec §37 burn-in defense as implemented |
+| `docs/hardware-validation.md` | what has been physically tested — the only source of "works" |

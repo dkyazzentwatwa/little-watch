@@ -29,6 +29,11 @@ class AppRouter {
  private:
   App* find(AppId id);
 
+  // Unwinds the whole back stack, giving every paused app exactly one
+  // onClose(). `keep` is the app about to take the foreground.
+  void clearStack(AppId keep);
+  bool stackContains(AppId id, uint8_t upTo) const;
+
   struct Entry {
     AppId id = AppId::Home;
     App* app = nullptr;

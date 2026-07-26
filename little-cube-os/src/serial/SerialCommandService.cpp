@@ -4,12 +4,22 @@
 #include "../core/AppRouter.h"
 #include "../core/EventBus.h"
 #include "../core/SystemState.h"
+#include "../hardware/InputAdapter.h"
 #include "../hardware/SdCardAdapter.h"
+#include "../services/SettingsService.h"
 #include "../services/TimeService.h"
 #include "../services/WifiService.h"
 #include "CmdArgs.h"
+#include "commands/AssistantCommands.h"
+#include "commands/AudioCommands.h"
+#include "commands/CalendarCommands.h"
+#include "commands/ContactsCommands.h"
 #include "commands/FilesCommands.h"
+#include "commands/NewsCommands.h"
 #include "commands/NotesCommands.h"
+#include "commands/PodcastCommands.h"
+#include "commands/RecordingsCommands.h"
+#include "commands/SettingsCommands.h"
 #include "commands/StorageCommands.h"
 
 void SerialCommandService::begin(Services* services) {
@@ -33,8 +43,18 @@ void SerialCommandService::update() {
       if (overflowed_) {
         Serial.println("error: line too long (max 255 chars); ignored");
         if (wifiPrompt_.active) {
+          // The truncated line is the first 255 chars of a password — wipe it
+          // exactly like the accepted path does.
           wifiPrompt_.active = false;
+          memset(line_, 0, sizeof(line_));
+          memset(wifiPrompt_.ssid, 0, sizeof(wifiPrompt_.ssid));
           Serial.println("password entry cancelled");
+        }
+        if (assistantKeyPrompt_.active) {
+          // Same rule for a truncated API key: wipe, never keep a fragment.
+          assistantKeyPrompt_.active = false;
+          memset(line_, 0, sizeof(line_));
+          Serial.println("key entry cancelled");
         }
       } else if (wifiPrompt_.active) {
         // This line is a Wi-Fi password: hand it straight to the service,
@@ -46,6 +66,17 @@ void SerialCommandService::update() {
         }
         memset(line_, 0, sizeof(line_));
         memset(wifiPrompt_.ssid, 0, sizeof(wifiPrompt_.ssid));
+      } else if (assistantKeyPrompt_.active) {
+        // This line is the OpenAI API key: store it in NVS, then destroy the
+        // only plaintext copy. It is never echoed or logged.
+        assistantKeyPrompt_.active = false;
+        if (line_[0] == '\0') {
+          Serial.println("key entry cancelled");
+        } else if (services_->settings != nullptr) {
+          services_->settings->setOpenaiKey(String(line_));
+          Serial.println("key stored (NVS)");
+        }
+        memset(line_, 0, sizeof(line_));
       } else if (multiline_.active()) {
         switch (multiline_.feedLine(line_)) {
           case MultilineBuffer::Result::Saved:
@@ -55,8 +86,21 @@ void SerialCommandService::update() {
           case MultilineBuffer::Result::Cancelled:
             Serial.println("Discarded.");
             break;
+          case MultilineBuffer::Result::Error: {
+            // The buffer prints the specific cause; add where the text went,
+            // so a failed save is never silent and never loses the content.
+            const char* recovery = multiline_.recoveryPath();
+            if (recovery != nullptr) {
+              // The next capture reuses (and clears) that temp path.
+              Serial.printf("Not saved. Your text is still in %s — copy it out before the"
+                            " next write.\n",
+                            recovery);
+            } else {
+              Serial.println("Not saved.");
+            }
+            break;
+          }
           case MultilineBuffer::Result::Collecting:
-          case MultilineBuffer::Result::Error:
             break;
         }
       } else if (lineLen_ > 0) {
@@ -88,19 +132,69 @@ void SerialCommandService::printHelp(const char* topic) {
       printStorageHelp();
       return;
     }
+    if (strcmp(topic, "wifi") == 0) {
+      printWifiHelp();
+      return;
+    }
+    if (strcmp(topic, "recordings") == 0) {
+      printRecordingsHelp();
+      return;
+    }
+    if (strcmp(topic, "assistant") == 0) {
+      printAssistantHelp();
+      return;
+    }
+    if (strcmp(topic, "audio") == 0) {
+      printAudioHelp();
+      return;
+    }
+    if (strcmp(topic, "calendar") == 0) {
+      printCalendarHelp();
+      return;
+    }
+    if (strcmp(topic, "contacts") == 0) {
+      printContactsHelp();
+      return;
+    }
+    if (strcmp(topic, "settings") == 0) {
+      printSettingsHelp();
+      return;
+    }
+    if (strcmp(topic, "news") == 0) {
+      printNewsHelp();
+      return;
+    }
+    if (strcmp(topic, "podcast") == 0) {
+      printPodcastHelp();
+      return;
+    }
     Serial.printf("no detailed help for '%s' yet\n", topic);
     return;
   }
-  Serial.printf("%s %s — serial interface\n\n", FIRMWARE_NAME, FIRMWARE_VERSION);
-  Serial.println("general:  help [topic] · status · version · uptime · reboot");
-  Serial.println("          open <app> · back");
-  Serial.println("notes:    list · show · new · write · append · rename · favorite ·");
-  Serial.println("          pin · delete · import · export        (help notes)");
-  Serial.println("files:    list · tree · cat · mkdir · copy · move · rename · delete");
-  Serial.println("          (help files)");
-  Serial.println("storage:  status · mount · eject · usage · index (help storage)");
-  Serial.println("wifi / recordings / audio / calendar / contacts / settings:");
-  Serial.println("          arriving in later milestones");
+  Serial.printf("%s %s — USB serial commands\n", FIRMWARE_NAME, FIRMWARE_VERSION);
+  Serial.println("");
+  Serial.println("HOW:  type   <group> <command> [text]   then press Enter");
+  Serial.println("      e.g.   status        wifi scan       notes list      audio play 1");
+  Serial.println("MORE: type   help <group>                 e.g.   help audio");
+  Serial.println("");
+  Serial.println("  SYSTEM     status · version · uptime · reboot · open <app> · back");
+  Serial.println("  TIME       time · time set YYYY-MM-DD HH:MM");
+  Serial.println("  WEATHER    set it:  settings set weather.city <name>   (needs Wi-Fi)");
+  Serial.println("  NEWS       list · show <n> · refresh   (BBC News)");
+  Serial.println("  PODCAST    feeds · add <url> · fetch · status · list");
+  Serial.println("  NOTES      list · show · new · write · append · rename · pin · delete");
+  Serial.println("  FILES      list · tree · cat · mkdir · copy · move · rename · delete");
+  Serial.println("  STORAGE    status · mount · eject · usage");
+  Serial.println("  WI-FI      scan · connect · status · disconnect · forget · offline");
+  Serial.println("  AUDIO      list · play <n> · pause · resume · stop · next · previous");
+  Serial.println("  RECORDINGS list · start · stop · gain · normalize · gate · delete");
+  Serial.println("  ASSISTANT  status · key · ask <q> · voice · transcribe · reset");
+  Serial.println("  CALENDAR   list · show · next · add · done · delete");
+  Serial.println("  CONTACTS   list · search · show · add · set · favorite · delete");
+  Serial.println("  SETTINGS   list · get <key> · set <key> <value> · bedtime");
+  Serial.println("  SCREEN     input debug <on|off>");
+  Serial.println("");
+  Serial.println("Volume: 'audio volume <0-100>'.  Detailed help + examples: help <group>.");
 }
 
 void SerialCommandService::printStatus() {
@@ -145,6 +239,28 @@ void SerialCommandService::handleLine(char* line) {
   }
   if (strcmp(family, "status") == 0) {
     printStatus();
+    return;
+  }
+  if (strcmp(family, "input") == 0 && services_->input != nullptr) {
+    const char* verb = cmdargs::nextToken(cursor);
+    const char* value = cmdargs::nextToken(cursor);
+    if (verb != nullptr && strcmp(verb, "debug") == 0 && value != nullptr) {
+      services_->input->setDebugLog(strcmp(value, "on") == 0);
+      Serial.printf("input debug %s\n", services_->input->debugLog() ? "on" : "off");
+      return;
+    }
+    if (verb != nullptr && strcmp(verb, "status") == 0) {
+      // INT edges prove the FT3168 interrupt wiring; polling stays I2C-silent
+      // while idle only once an edge has been seen (tap the glass to confirm).
+      Serial.printf("touch: %s, INT edges: %lu (%s), debug %s\n",
+                    services_->input->touchReady() ? "ready" : "unavailable",
+                    (unsigned long)services_->input->touchIntEdges(),
+                    services_->input->touchIntSeen() ? "INT-gated polling"
+                                                     : "fallback timed polling",
+                    services_->input->debugLog() ? "on" : "off");
+      return;
+    }
+    Serial.println("usage: input debug <on|off> | input status");
     return;
   }
   if (strcmp(family, "uptime") == 0) {
@@ -251,12 +367,77 @@ void SerialCommandService::handleLine(char* line) {
     return;
   }
 
-  if (strcmp(family, "recordings") == 0 ||
-      strcmp(family, "audio") == 0 || strcmp(family, "volume") == 0 ||
-      strcmp(family, "calendar") == 0 || strcmp(family, "contacts") == 0 ||
-      strcmp(family, "settings") == 0) {
-    Serial.printf("'%s' commands arrive in a later milestone — 'help' shows what works today\n",
-                  family);
+  if (strcmp(family, "recordings") == 0) {
+    if (verb == nullptr) {
+      printRecordingsHelp();
+    } else if (!handleRecordingsCommand(*services_, verb, cursor)) {
+      Serial.printf("error: unknown command 'recordings %s'\n", verb);
+    }
+    return;
+  }
+  if (strcmp(family, "assistant") == 0) {
+    if (verb == nullptr) {
+      printAssistantHelp();
+    } else if (!handleAssistantCommand(*services_, assistantKeyPrompt_, verb, cursor)) {
+      Serial.printf("error: unknown command 'assistant %s'\n", verb);
+    }
+    return;
+  }
+  if (strcmp(family, "audio") == 0) {
+    if (verb == nullptr) {
+      printAudioHelp();
+    } else if (!handleAudioCommand(*services_, verb, cursor)) {
+      Serial.printf("error: unknown command 'audio %s'\n", verb);
+    }
+    return;
+  }
+  if (strcmp(family, "volume") == 0) {
+    // `volume <0-100>` — the verb IS the value here.
+    char volLine[16];
+    snprintf(volLine, sizeof(volLine), "%s", verb != nullptr ? verb : "");
+    char* volCursor = volLine;
+    handleVolumeCommand(*services_, volCursor);
+    return;
+  }
+
+  if (strcmp(family, "calendar") == 0) {
+    if (verb == nullptr) {
+      printCalendarHelp();
+    } else if (!handleCalendarCommand(*services_, verb, cursor)) {
+      Serial.printf("error: unknown command 'calendar %s' — try 'help calendar'\n", verb);
+    }
+    return;
+  }
+  if (strcmp(family, "contacts") == 0) {
+    if (verb == nullptr) {
+      printContactsHelp();
+    } else if (!handleContactsCommand(*services_, verb, cursor)) {
+      Serial.printf("error: unknown command 'contacts %s' — try 'help contacts'\n", verb);
+    }
+    return;
+  }
+  if (strcmp(family, "settings") == 0) {
+    if (verb == nullptr) {
+      printSettingsHelp();
+    } else if (!handleSettingsCommand(*services_, verb, cursor)) {
+      Serial.printf("error: unknown command 'settings %s' — try 'help settings'\n", verb);
+    }
+    return;
+  }
+  if (strcmp(family, "news") == 0) {
+    if (verb == nullptr) {
+      printNewsHelp();
+    } else if (!handleNewsCommand(*services_, verb, cursor)) {
+      Serial.printf("error: unknown command 'news %s' — try 'help news'\n", verb);
+    }
+    return;
+  }
+  if (strcmp(family, "podcast") == 0) {
+    if (verb == nullptr) {
+      printPodcastHelp();
+    } else if (!handlePodcastCommand(*services_, verb, cursor)) {
+      Serial.printf("error: unknown command 'podcast %s' — try 'help podcast'\n", verb);
+    }
     return;
   }
 

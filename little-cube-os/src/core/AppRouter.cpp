@@ -1,5 +1,7 @@
 #include "AppRouter.h"
 
+#include <string.h>  // memmove, for the oldest-first stack eviction
+
 const char* appName(AppId id) {
   switch (id) {
     case AppId::Home: return "Home";
@@ -14,6 +16,9 @@ const char* appName(AppId id) {
     case AppId::Contacts: return "Contacts";
     case AppId::Calculator: return "Calculator";
     case AppId::Settings: return "Settings";
+    case AppId::Reader: return "Reader";
+    case AppId::News: return "News";
+    case AppId::Assistant: return "Assistant";
   }
   return "?";
 }
@@ -63,19 +68,72 @@ void AppRouter::begin(AppId initial) {
   }
 }
 
+bool AppRouter::stackContains(AppId id, uint8_t upTo) const {
+  const uint8_t limit = upTo > kMaxStack ? kMaxStack : upTo;
+  for (uint8_t i = 0; i < limit; i++) {
+    if (stack_[i] == id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Popping top-down and skipping ids that recur deeper means a duplicated app
+// (Home -> Notes -> Settings -> Notes) gets a single onClose() rather than one
+// per stack slot. currentId_ is skipped too: the caller has already closed the
+// outgoing foreground app.
+void AppRouter::clearStack(AppId keep) {
+  while (depth_ > 0) {
+    const AppId id = stack_[--depth_];
+    if (id == keep || id == currentId_ || stackContains(id, depth_)) {
+      continue;
+    }
+    if (App* app = find(id)) {
+      app->onClose();
+    }
+  }
+}
+
 void AppRouter::open(AppId id) {
   if (!started_ || id == currentId_) {
     return;
   }
-  if (App* prev = find(currentId_)) {
-    prev->onClose();
-  }
-  // Home is the stack root; opening it clears history instead of nesting.
+  App* prev = find(currentId_);
+
+  // Home is the stack root; opening it unwinds history instead of nesting.
+  // Everything it discards has to be closed on the way out — a paused app that
+  // is dropped without onClose() keeps whatever it was holding (a provisioning
+  // AP, a note body) until reboot.
   if (id == AppId::Home) {
-    depth_ = 0;
-  } else if (depth_ < kMaxStack) {
+    if (prev != nullptr) {
+      prev->onClose();
+    }
+    clearStack(id);
+  } else {
+    // Paused, not closed: this app stays on the stack and back() revives it
+    // with onResume().
+    if (prev != nullptr) {
+      prev->onPause();
+    }
+    AppId evicted = AppId::Home;
+    bool didEvict = false;
+    if (depth_ == kMaxStack) {
+      // Stack full. Drop the OLDEST entry, never the immediate parent —
+      // skipping the push would leave back() permanently one level out of
+      // step with what the user sees.
+      evicted = stack_[0];
+      memmove(stack_, stack_ + 1, sizeof(AppId) * (kMaxStack - 1));
+      depth_ = kMaxStack - 1;
+      didEvict = true;
+    }
     stack_[depth_++] = currentId_;
+    if (didEvict && evicted != id && !stackContains(evicted, depth_)) {
+      if (App* app = find(evicted)) {
+        app->onClose();
+      }
+    }
   }
+
   currentId_ = id;
   if (App* next = find(currentId_)) {
     next->onOpen();
@@ -107,7 +165,7 @@ void AppRouter::home() {
   if (App* prev = find(currentId_)) {
     prev->onClose();
   }
-  depth_ = 0;
+  clearStack(AppId::Home);
   currentId_ = AppId::Home;
   if (App* next = find(currentId_)) {
     next->onOpen();

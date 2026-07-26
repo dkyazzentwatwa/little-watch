@@ -3,6 +3,7 @@
 #include <Arduino.h>
 
 #include "../core/App.h"
+#include "Icons.h"
 
 class Arduino_GFX;
 struct Services;
@@ -16,7 +17,8 @@ class Carousel {
   struct Card {
     AppId id;
     const char* title;
-    const char* hint;
+    const char* hint;  // shown when the app has no live fact to report
+    icons::IconId icon;
     bool tools;  // pseudo-card: opens the Tools screen, not an app
   };
 
@@ -26,6 +28,13 @@ class Carousel {
   void render(Arduino_GFX& gfx, int16_t topY);
 
   bool animating() const { return offsetPx_ != 0; }
+  // True once, on the tick the slide reaches its final position, so the
+  // caller can draw the settled frame.
+  bool consumeSettled() {
+    const bool s = settled_;
+    settled_ = false;
+    return s;
+  }
   const Card& focused() const;
   uint8_t index() const { return index_; }
   uint8_t count() const;
@@ -37,6 +46,7 @@ class Carousel {
   void renderCard(Arduino_GFX& gfx, uint8_t cardIndex, int16_t xOffset, int16_t topY);
 
   Services* services_ = nullptr;
+  bool settled_ = false;
   uint8_t index_ = 0;
   // Pixel offset of the focused card from center; eases back to 0.
   int16_t offsetPx_ = 0;

@@ -72,6 +72,31 @@ bool SdStorage::ensureTree() {
   return allOk;
 }
 
+void SdStorage::resetTreeCursor() {
+  treeCursor_ = 0;
+}
+
+// One directory per call so tree creation can be spread across frames instead
+// of stalling the loop with 19 filesystem round-trips at once.
+bool SdStorage::ensureTreeStep() {
+  const uint8_t total = sizeof(kTree) / sizeof(kTree[0]);
+  if (card_ == nullptr || !card_->writable()) {
+    return true;  // nothing to do; do not spin on an unwritable card
+  }
+  if (treeCursor_ >= total) {
+    return true;
+  }
+  const char* dir = kTree[treeCursor_++];
+  if (!ensureDir(dir)) {
+    Serial.printf("[storage] mkdir failed: %s\n", dir);
+  }
+  if (treeCursor_ >= total) {
+    Serial.println("[storage] /littlecube tree ready");
+    return true;
+  }
+  return false;
+}
+
 bool SdStorage::makeDir(const char* path) {
   String safe;
   if (!sanitizePath(path, safe) || card_ == nullptr || !card_->writable()) {
@@ -82,7 +107,9 @@ bool SdStorage::makeDir(const char* path) {
 
 bool SdStorage::removeFile(const char* path) {
   String safe;
-  if (!sanitizePath(path, safe) || card_ == nullptr || !card_->writable()) {
+  // Deletion is gated on canDelete(), not writable(): a Full card must stay
+  // deletable or there is no way to free space from the device.
+  if (!sanitizePath(path, safe) || card_ == nullptr || !card_->canDelete()) {
     return false;
   }
   if (SD_MMC.exists(safe)) {

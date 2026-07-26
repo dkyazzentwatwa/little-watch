@@ -3,26 +3,124 @@
 #include <Arduino_GFX_Library.h>
 
 #include "../board_config.h"
+#include "../core/Services.h"
+#include "../core/SystemState.h"
+#include "../hardware/SdCardAdapter.h"
+#include "../hardware/audio/AudioAdapter.h"
+#include "../services/AssistantService.h"
+#include "../services/NewsService.h"
+#include "../services/SettingsService.h"
+#include "../services/WeatherService.h"
+#include "Icons.h"
 #include "Theme.h"
 #include "widgets/Widgets.h"
 
 namespace {
 
 constexpr Carousel::Card kCards[] = {
-    {AppId::Today, "Today", "at a glance", false},
-    {AppId::Clock, "Clock", "time & alarms", false},
-    {AppId::Weather, "Weather", "forecast", false},
-    {AppId::Notes, "Notes", "read & capture", false},
-    {AppId::Recorder, "Recorder", "voice notes", false},
-    {AppId::Audio, "Audio", "sound", false},
-    {AppId::Calendar, "Calendar", "agenda", false},
-    {AppId::Settings, "Settings", "device", false},
-    {AppId::Files, "Tools", "files & more", true},
+    {AppId::Today, "Today", "at a glance", icons::IconId::Today, false},
+    {AppId::Clock, "Clock", "time & alarms", icons::IconId::Clock, false},
+    {AppId::Weather, "Weather", "forecast", icons::IconId::Weather, false},
+    {AppId::News, "News", "headlines", icons::IconId::News, false},
+    {AppId::Notes, "Notes", "read & capture", icons::IconId::Notes, false},
+    {AppId::Reader, "Reader", "read books", icons::IconId::Reader, false},
+    {AppId::Recorder, "Recorder", "voice notes", icons::IconId::Recorder, false},
+    {AppId::Assistant, "Assistant", "voice AI", icons::IconId::Assistant, false},
+    {AppId::Audio, "Audio", "sound", icons::IconId::Audio, false},
+    {AppId::Calendar, "Calendar", "agenda", icons::IconId::Calendar, false},
+    {AppId::Settings, "Settings", "device", icons::IconId::Settings, false},
+    {AppId::Files, "Tools", "files & more", icons::IconId::Tools, true},
 };
 constexpr uint8_t kCardCount = sizeof(kCards) / sizeof(kCards[0]);
 
 // Slide easing: proportional decay, ~120 ms to settle.
 constexpr uint32_t kEaseDivisorMs = 120;
+
+// One live fact per card, replacing the static hint when the answer is known.
+//
+// EVERY branch must be O(1) against already-cached state: this runs for the
+// focused card (and its neighbour mid-slide) on every rendered frame. No SD
+// walk, no network, no I2C. RecorderService::list() is deliberately absent for
+// exactly that reason — counting takes means walking the card's directory.
+//
+// Returns nullptr when nothing live is known, and the card falls back to hint.
+const char* glanceFor(AppId id, Services& services, char* buf, size_t cap) {
+  const SystemState* state = services.state;
+  switch (id) {
+    case AppId::Clock:
+      if (state != nullptr && state->timeValid) {
+        snprintf(buf, cap, "%s now", state->clockHhMm);
+        return buf;
+      }
+      return "clock not set";
+
+    case AppId::Today:
+      if (state != nullptr && state->batteryPresent && state->batteryPercent >= 0) {
+        snprintf(buf, cap, "battery %d%%%s", state->batteryPercent,
+                 state->charging ? " · charging" : "");
+        return buf;
+      }
+      return nullptr;
+
+    case AppId::Weather: {
+      if (services.weather == nullptr) {
+        return nullptr;
+      }
+      const WeatherSnapshot& w = services.weather->snapshot();
+      if (!w.valid) {
+        return state != nullptr && state->internet ? "fetching..." : "offline";
+      }
+      snprintf(buf, cap, "%d°C · %s", static_cast<int>(w.temperatureC + 0.5f), w.condition);
+      return buf;
+    }
+
+    case AppId::News:
+      if (services.news == nullptr || services.news->count() == 0) {
+        return nullptr;
+      }
+      snprintf(buf, cap, "%u headlines", static_cast<unsigned>(services.news->count()));
+      return buf;
+
+    case AppId::Assistant:
+      if (services.settings != nullptr && !services.settings->hasOpenaiKey()) {
+        return "needs an API key";
+      }
+      if (state != nullptr && !state->internet) {
+        return "offline";
+      }
+      if (services.assistant != nullptr && services.assistant->busy()) {
+        return services.assistant->stateName();
+      }
+      return "ready — tap to talk";
+
+    case AppId::Audio:
+      if (services.audio != nullptr && services.audio->isPlaying()) {
+        const char* path = services.audio->playingPath();
+        const char* name = strrchr(path, '/');
+        // Bounded precision: a full path is far wider than the card anyway,
+        // and an unbounded %s here is a truncation warning under -Wall.
+        snprintf(buf, cap, "playing %.28s", name != nullptr ? name + 1 : path);
+        return buf;
+      }
+      return nullptr;
+
+    case AppId::Files:
+      if (services.sdCard != nullptr && services.sdCard->mounted()) {
+        const uint64_t freeMb = services.sdCard->freeBytes() / (1024 * 1024);
+        if (freeMb >= 1024) {
+          snprintf(buf, cap, "%u.%u GB free", static_cast<unsigned>(freeMb / 1024),
+                   static_cast<unsigned>((freeMb % 1024) * 10 / 1024));
+        } else {
+          snprintf(buf, cap, "%u MB free", static_cast<unsigned>(freeMb));
+        }
+        return buf;
+      }
+      return "no SD card";
+
+    default:
+      return nullptr;
+  }
+}
 
 }  // namespace
 
@@ -57,6 +155,10 @@ void Carousel::update(uint32_t deltaMs) {
   int32_t nextOffset = offsetPx_ - (step != 0 ? step : (offsetPx_ > 0 ? 1 : -1));
   if ((offsetPx_ > 0 && nextOffset <= 2) || (offsetPx_ < 0 && nextOffset >= -2)) {
     nextOffset = 0;
+    // animating() goes false in this same tick, so without this flag the last
+    // frame ever drawn is the one a few px short and the cards visibly rest
+    // off-centre.
+    settled_ = true;
   }
   offsetPx_ = static_cast<int16_t>(nextOffset);
 }
@@ -70,19 +172,30 @@ void Carousel::renderCard(Arduino_GFX& gfx, uint8_t cardIndex, int16_t xOffset, 
 
   widgets::card(gfx, x, y, w, h);
 
-  gfx.setTextSize(theme::kTextSizeTitle);
-  gfx.setTextColor(theme::kText);
-  const int16_t tw = static_cast<int16_t>(strlen(c.title)) * 6 * theme::kTextSizeTitle;
-  gfx.setCursor(x + (w - tw) / 2, y + h / 2 - 40);
-  gfx.print(c.title);
+  // Icon sits in a tinted well so it reads as an object rather than as loose
+  // strokes floating on the panel.
+  constexpr int16_t kIconSize = 84;
+  const int16_t wellSize = kIconSize + 28;
+  const int16_t wellX = x + (w - wellSize) / 2;
+  const int16_t wellY = y + h / 2 - 128;
+  gfx.fillRoundRect(wellX, wellY, wellSize, wellSize, theme::kCardRadius + 4,
+                    theme::kPanelAlt);
+  icons::draw(gfx, c.icon, wellX + 14, wellY + 14, kIconSize, theme::kAccent,
+              theme::kPanelAlt);
 
-  gfx.setTextSize(theme::kTextSizeSmall);
-  gfx.setTextColor(theme::kTextDim);
-  const int16_t hw = static_cast<int16_t>(strlen(c.hint)) * 6 * theme::kTextSizeSmall;
-  gfx.setCursor(x + (w - hw) / 2, y + h / 2 + 8);
-  gfx.print(c.hint);
+  widgets::textCentered(gfx, x, wellY + wellSize + 26, w, c.title, widgets::TextStyle::Title,
+                        theme::kText);
 
-  gfx.fillRect(x + (w - 60) / 2, y + h / 2 - 8, 60, 3, theme::kAccent);
+  char buf[48];
+  const char* line = c.hint;
+  if (services_ != nullptr) {
+    const char* live = glanceFor(c.id, *services_, buf, sizeof(buf));
+    if (live != nullptr) {
+      line = live;
+    }
+  }
+  widgets::textCentered(gfx, x, wellY + wellSize + 74, w, line, widgets::TextStyle::Caption,
+                        theme::kTextDim);
 }
 
 void Carousel::render(Arduino_GFX& gfx, int16_t topY) {
@@ -115,17 +228,13 @@ void Carousel::render(Arduino_GFX& gfx, int16_t topY) {
     renderCard(gfx, nextIdx, offsetPx_ + DISPLAY_WIDTH, topY);
   }
 
-  // Position dots.
-  const int16_t dotsW = kCardCount * 12;
-  int16_t dx = (DISPLAY_WIDTH - dotsW) / 2;
-  const int16_t dy = DISPLAY_HEIGHT - 24;
-  for (uint8_t i = 0; i < kCardCount; i++) {
-    if (i == index_) {
-      gfx.fillCircle(dx + 4, dy, 4, theme::kAccent);
-    } else {
-      gfx.fillCircle(dx + 4, dy, 2, theme::kPanelAlt);
-    }
-    dx += 12;
-  }
+  // Progress pill: twelve dots at this width are a smear, so the position
+  // reads as a filled fraction of a single track instead.
+  const int16_t trackW = DISPLAY_WIDTH - 2 * theme::kSafeInset;
+  const int16_t trackX = theme::kSafeInset;
+  const int16_t trackY = DISPLAY_HEIGHT - 26;
+  const int16_t segW = trackW / kCardCount;
+  gfx.fillRoundRect(trackX, trackY, trackW, 4, 2, theme::kPanelAlt);
+  gfx.fillRoundRect(trackX + segW * index_, trackY, segW, 4, 2, theme::kAccent);
 #endif
 }

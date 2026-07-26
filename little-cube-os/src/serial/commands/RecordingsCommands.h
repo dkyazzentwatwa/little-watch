@@ -1,9 +1,7 @@
 #pragma once
 
-// Recordings serial command family — registered with SerialCommandService.
-// TODO(task-10/18): implementation.
-
 struct Services;
-class SerialCommandService;
 
-void registerRecordingsCommands(SerialCommandService& serial, Services& services);
+// `recordings ...` family (spec §17): list/rename/delete/info.
+bool handleRecordingsCommand(Services& services, const char* verb, char* args);
+void printRecordingsHelp();
