@@ -6,7 +6,7 @@
 
 **Architecture:** Three shared pieces land first — a `widgets::footer()` helper, weather glyphs in `icons::`, and a QR wrapper isolating a new library — then each screen is migrated independently against them. Clock faces live in their own file so `ClockApp` keeps only selection, persistence and the animation clock.
 
-**Tech Stack:** Arduino CLI, ESP32-S3, Arduino_GFX immediate-mode canvas, Adafruit_GFX Free* fonts, `ricmoo/QRCode` (new).
+**Tech Stack:** Arduino CLI, ESP32-S3, Arduino_GFX immediate-mode canvas, Adafruit_GFX Free* fonts, and the ESP-IDF QR encoder already bundled with the Arduino core. **No new libraries.**
 
 **Spec:** `docs/superpowers/specs/2026-07-31-screen-polish-design.md`
 
@@ -87,8 +87,7 @@ export LITTLECUBE_PORT="/dev/cu.usbmodem101"
 |---|---|---|
 | `little-cube-os/src/ui/widgets/Widgets.{h,cpp}` | **Modify** — add `footer()` | 1 |
 | `little-cube-os/src/ui/Icons.{h,cpp}` | **Modify** — 7 weather glyphs + `forCondition()` | 2 |
-| `little-cube-os/src/ui/QrCode.{h,cpp}` | **Create** — sole include site for `ricmoo/QRCode` | 3 |
-| `scripts/build.sh`, `scripts/install-libraries.sh`, `little-cube-os/sketch.yaml` | **Modify** — register the library in all three | 3 |
+| `little-cube-os/src/ui/QrCode.{h,cpp}` | **Create** — sole include site for the core's bundled QR encoder | 3 |
 | `little-cube-os/src/services/SettingsService.{h,cpp}` | **Modify** — persisted `clockFace` | 4 |
 | `little-cube-os/src/apps/ClockFaces.{h,cpp}` | **Create** — six face renderers, no app state | 5, 6 |
 | `little-cube-os/src/apps/ClockApp.{h,cpp}` | **Modify** — selection, persistence, animation clock | 5, 6 |
@@ -466,55 +465,47 @@ git commit -m "UI: weather condition glyphs and an exact-match condition mapper"
 
 ---
 
-## Task 3: QR library and `ui/QrCode`
+## Task 3: QR rendering on the core's bundled encoder
 
 **Files:**
 - Create: `little-cube-os/src/ui/QrCode.h`
 - Create: `little-cube-os/src/ui/QrCode.cpp`
-- Modify: `scripts/install-libraries.sh`
-- Modify: `scripts/build.sh`
-- Modify: `little-cube-os/sketch.yaml`
 
-⚠️ **All three registration sites are mandatory.** `build.sh` passes explicit
-`--library` flags, and passing *any* `--library` disables arduino-cli's
-automatic discovery — so a library missing from `build.sh` will not be found
-even though it is installed. A library missing from `sketch.yaml` breaks the
-profile build that CI uses. This is called out in `CLAUDE.md` for exactly this
-reason.
+⚠️ **This task originally called for adding `ricmoo/QRCode` and registering it
+in `scripts/build.sh`, `scripts/install-libraries.sh` and
+`little-cube-os/sketch.yaml`. Do none of that.** The attempt failed to compile:
+the ESP32 Arduino core already ships `espressif__qrcode`, and its `qrcode.h`
+sits ahead of any library on the include path
+(`tools/esp32s3-libs/3.3.8/include/espressif__qrcode/include/qrcode.h`).
 
-- [ ] **Step 1: Install the library**
+The collision was the platform pointing out the dependency was redundant.
+`libespressif__qrcode.a` is already in the default `ld_libs`, so this links
+with **no build-system changes at all**, and the bundled encoder supports QR
+versions 2-40 against ricmoo's 8.
 
-Add to `scripts/install-libraries.sh`, after the `JPEGDEC` line:
-
-```bash
-"${ARDUINO_CLI}" lib install "QRCode@0.0.1"
-```
-
-Then run it:
+- [ ] **Step 1: Read the real header before writing anything**
 
 ```bash
-./scripts/install-libraries.sh
+cat ~/Library/Arduino15/packages/esp32/tools/esp32s3-libs/3.3.8/include/espressif__qrcode/include/qrcode.h
 ```
 
-Expected: `QRCode@0.0.1 installed`, or `already installed`.
+The API:
 
-- [ ] **Step 2: Add it to the compile line**
+```c
+esp_err_t esp_qrcode_generate(esp_qrcode_config_t *cfg, const char *text);
+int  esp_qrcode_get_size(esp_qrcode_handle_t qrcode);                 // side in modules
+bool esp_qrcode_get_module(esp_qrcode_handle_t qrcode, int x, int y); // true = black
 
-In `scripts/build.sh`, after the `JPEGDEC` line:
-
-```bash
-  --library "${ARDUINO_LIB_ROOT}/QRCode" \
+typedef struct {
+    void (*display_func)(esp_qrcode_handle_t qrcode);
+    int max_qrcode_version;   // 2-40
+    int qrcode_ecc_level;     // ESP_QRCODE_ECC_LOW / MED / QUART / HIGH
+} esp_qrcode_config_t;
 ```
 
-- [ ] **Step 3: Add it to the profile**
+Returns `ESP_OK`, `ESP_FAIL`, or `ESP_ERR_NO_MEM`.
 
-In `little-cube-os/sketch.yaml`, in the `libraries:` list after `JPEGDEC (1.8.4)`:
-
-```yaml
-      - QRCode (0.0.1)
-```
-
-- [ ] **Step 4: Create `little-cube-os/src/ui/QrCode.h`**
+- [ ] **Step 2: Create `little-cube-os/src/ui/QrCode.h`**
 
 ```cpp
 #pragma once
@@ -523,117 +514,89 @@ In `little-cube-os/sketch.yaml`, in the `libraries:` list after `JPEGDEC (1.8.4)
 
 class Arduino_GFX;
 
-// QR rendering, wrapping ricmoo/QRCode. This header and its .cpp are the ONLY
-// place that library is included, so swapping or dropping it touches one file.
+// QR rendering, wrapping the ESP-IDF encoder bundled with the Arduino core
+// (espressif__qrcode, already in the default ld_libs). This header and its
+// .cpp are the ONLY place that encoder is included. Using it rather than a
+// third-party library means no added dependency and no three-site
+// registration in build.sh / install-libraries.sh / sketch.yaml.
 namespace qrcode {
 
 // Draws a QR for `text` inside a maxSizePx square at (x, y), picking the
 // largest module size that fits including the mandatory 4-module quiet zone.
 //
-// Returns false when the text does not fit the largest supported version, when
-// maxSizePx cannot afford one pixel per module, or when text is empty. The
-// caller must draw its own fallback — a truncated or scaled QR is not a
-// degraded QR, it is an unscannable one.
+// Returns false when the text does not encode, when maxSizePx cannot afford
+// the minimum module size, or when text is empty. The caller must draw its own
+// fallback — a truncated or undersized QR is not a degraded QR, it is an
+// unscannable one.
 //
 // `bg` must be a LIGHT color. QR scanners require dark modules on a light
 // field; inheriting theme::kBg on a dark palette produces a code no phone will
 // read, so the caller passes the quiet-zone color explicitly.
+//
+// NOT REENTRANT — see the .cpp. Safe only from the loop task.
 bool draw(Arduino_GFX& gfx, int16_t x, int16_t y, int16_t maxSizePx, const char* text,
           uint16_t fg, uint16_t bg);
 
 }  // namespace qrcode
 ```
 
-- [ ] **Step 5: Create `little-cube-os/src/ui/QrCode.cpp`**
+- [ ] **Step 3: Create `little-cube-os/src/ui/QrCode.cpp`**
 
-```cpp
-#include "QrCode.h"
+Two constraints the API imposes, both of which must be documented in the source
+rather than left for the next reader to discover:
 
-#include <Arduino_GFX_Library.h>
-#include <qrcode.h>
+1. **`esp_qrcode_generate()` is callback-based with no user-data parameter.**
+   `display_func` receives only the handle, so the render target and geometry
+   must reach it through file scope. That makes `draw()` non-reentrant. It is
+   safe here only because all rendering runs on the single loop task — say so
+   in the comment; it is a real constraint, not a shortcut.
+2. **It allocates** (`ESP_ERR_NO_MEM` is a documented return). Cap
+   `max_qrcode_version` at 10 to bound it — version 10 at ECC_LOW holds ~271
+   alphanumeric characters, far more than any article URL. The allocation is
+   per page-entry, not per-frame: `NewsApp::render()` returns early when the
+   frame is not dirty, so a static QR page encodes exactly once.
 
-namespace qrcode {
+Also required: `ESP_QRCODE_ECC_LOW` (maximises payload per module, correct for
+a clean backlit surface rather than a printed label); the 4-module quiet zone
+counted in the fit so the border is never sacrificed; `bg` filled behind the
+whole code including the quiet zone; and a **2px minimum module size**, not
+1px — a 1px-module QR will not scan off this panel, so returning true for one
+would be the function lying about success.
 
-namespace {
-// Version 3 (29x29) is the smallest worth trying for a URL; version 8 (49x49)
-// is the ceiling — beyond it the modules get too small to scan off this panel
-// at any size the screen can offer.
-constexpr uint8_t kMinVersion = 3;
-constexpr uint8_t kMaxVersion = 8;
+See the committed `little-cube-os/src/ui/QrCode.cpp` for the full
+implementation.
 
-// qrcode_getBufferSize(8) == ((49*49)+7)/8 == 301 bytes. Sized with headroom
-// and guarded at runtime below. This is a file-scope static rather than a
-// local because 300+ bytes is more than a render call should put on its stack.
-uint8_t gBuffer[320];
-}  // namespace
-
-bool draw(Arduino_GFX& gfx, int16_t x, int16_t y, int16_t maxSizePx, const char* text,
-          uint16_t fg, uint16_t bg) {
-  if (text == nullptr || text[0] == '\0' || maxSizePx <= 0) {
-    return false;
-  }
-
-  QRCode qr;
-  for (uint8_t v = kMinVersion; v <= kMaxVersion; v++) {
-    if (qrcode_getBufferSize(v) > sizeof(gBuffer)) {
-      break;
-    }
-    // Returns 0 on success. ECC_LOW maximises payload per module, which is the
-    // right trade here: the code is on a clean backlit surface, not a printed
-    // label that might be damaged.
-    if (qrcode_initText(&qr, gBuffer, v, ECC_LOW, text) != 0) {
-      continue;
-    }
-    // Count the quiet zone in the fit, so the border is never sacrificed to
-    // squeeze in a larger code.
-    const int16_t totalModules = static_cast<int16_t>(qr.size) + 8;
-    const int16_t module = maxSizePx / totalModules;
-    if (module < 1) {
-      return false;
-    }
-    const int16_t side = module * totalModules;
-    gfx.fillRect(x, y, side, side, bg);
-    const int16_t originX = x + module * 4;
-    const int16_t originY = y + module * 4;
-    for (uint8_t my = 0; my < qr.size; my++) {
-      for (uint8_t mx = 0; mx < qr.size; mx++) {
-        if (qrcode_getModule(&qr, mx, my)) {
-          gfx.fillRect(originX + mx * module, originY + my * module, module, module, fg);
-        }
-      }
-    }
-    return true;
-  }
-  return false;
-}
-
-}  // namespace qrcode
-```
-
-- [ ] **Step 6: Compile gate**
-
-Run: `./scripts/build.sh`
-Expected: clean. If it fails with `qrcode.h: No such file or directory`, the
-`--library` line in `build.sh` is missing or misspelled — automatic discovery is
-off, so an installed-but-unregistered library is invisible.
-
-- [ ] **Step 7: Verify the profile build too**
-
-Run: `arduino-cli compile --profile littlecube little-cube-os`
-Expected: clean. This is the path CI uses and it reads `sketch.yaml`, not
-`build.sh` — it is the only check that catches a missing profile entry.
-
-- [ ] **Step 8: Commit**
+- [ ] **Step 4: Compile gate — BOTH paths**
 
 ```bash
-git add little-cube-os/src/ui/QrCode.h little-cube-os/src/ui/QrCode.cpp \
-        scripts/build.sh scripts/install-libraries.sh little-cube-os/sketch.yaml
-git commit -m "UI: QR rendering wrapper around ricmoo/QRCode"
+./scripts/build.sh
+```
+
+```bash
+arduino-cli compile --profile littlecube little-cube-os
+```
+
+Both must be clean.
+
+⚠️ **If the link fails with `objs.a(...) in archive is not an object`, that is
+a corrupted build cache, not your code** — it happens when two `arduino-cli`
+processes write the same sketch cache concurrently. Clear it and rebuild:
+
+```bash
+rm -rf ~/Library/Caches/arduino/sketches/*
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add little-cube-os/src/ui/QrCode.h little-cube-os/src/ui/QrCode.cpp
+git commit -m "UI: QR rendering on the core's bundled encoder, no new dependency"
 ```
 
 **Device gate:** verified in Task 10 by scanning the News QR with a phone.
 
 ---
+
 
 ## Task 4: Persisted clock-face setting
 
@@ -2555,9 +2518,12 @@ and which do not; tick nothing that was not observed.
 affected. If wrapping changes anywhere, this is the cause. Check a Notes body
 and a News detail after Task 9, not just the Assistant.
 
-**Flash growth.** JPEGDEC already made this build large; QRCode adds ~5 KB and
-the faces add drawing code. If the custom partition scheme overflows, the QR
-page is the least load-bearing feature here and is the first thing to cut.
+**Flash growth.** JPEGDEC already made this build large and the faces add
+drawing code. The QR encoder costs nothing new — it ships with the core and is
+already in the default `ld_libs`. Measured so far: 1,925,375 bytes at Task 1,
+1,926,775 at Task 3, i.e. **11% of a 16 MB flash**. There is no realistic
+pressure here; the earlier concern about the partition overflowing was
+unfounded.
 
 **`fillEllipse` availability (Task 6).** If this Arduino_GFX version lacks it,
 substitute scaled `fillCircle` calls rather than adding a library.
