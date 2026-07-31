@@ -13,9 +13,13 @@ user's Mac by an ffmpeg-based packing script.
 
 ## Decisions (user-confirmed)
 
-- **Orientation**: rotated landscape. Frames are pre-rotated by ffmpeg to
-  252×448 and drawn filling the panel's full 448 px axis; the user turns the
-  device sideways like a phone. Picture is ~35×20 mm vs ~29×16 mm letterboxed.
+- **Orientation**: rotated landscape. Frames are pre-rotated by ffmpeg, fit
+  (never padded) into the 448×310 landscape picture box left of the player
+  chrome, then transposed; the user turns the device sideways like a phone.
+  A 16:9 source lands at 252×448 stored, filling the panel's full 448 px
+  axis (picture ~35×20 mm); a 4:3 source lands at ~310×412, filling more of
+  the picture area instead of baking in pillarbox bars (~29×16 mm
+  letterboxed under the old fixed-box-and-pad scheme).
 - **Source**: SD card only. No streaming, no Wi-Fi dependency, no Mac helper.
   Matches the "everything degrades" rule — video works with Wi-Fi off.
 - **Subtitles**: none in v1. A real scope cut (subbed anime is unusable
@@ -36,7 +40,8 @@ user's Mac by an ffmpeg-based packing script.
 
 ## Expectations (stated up front, not failures)
 
-- ~15 fps at 252×448; frames drop under load, audio never stutters.
+- ~15 fps, aspect-fit into the 448×310 picture box (252×448 stored for 16:9,
+  ~310×412 for 4:3); frames drop under load, audio never stutters.
 - ~300 MB per 22-minute episode at these settings.
 - Battery: playback draws roughly 250–400 mA (AMOLED bright + both cores +
   SD); expect 30–45 min per charge. One episode ≈ one charge — this is why
@@ -121,8 +126,8 @@ off size field                off size field
  0   4   magic "LCV1"         20   4   frameCount
  4   2   version (1)          24   4   durationMs
  6   2   headerBytes (64)     28   4   indexOffset
- 8   2   width  (252)         32   4   dataOffset
-10   2   height (448)         36   4   maxFrameBytes
+ 8   2   width  (<=310)       32   4   dataOffset
+10   2   height (<=448)       36   4   maxFrameBytes
 12   2   fps    (15)          40  24   reserved (zero)
 14   2   audioChannels (1)
 16   4   audioRateHz (22050)
@@ -137,15 +142,18 @@ off size field                off size field
   `indexOffset + N*4`. Sequential playback never touches it.
 - `maxFrameBytes` sizes the ring slots at open; a frame chunk claiming more
   is a corruption signal.
-- Open-time validation: magic, version, headerBytes, width/height within
-  panel bounds, fps 1–30, audioRateHz sane, `dataOffset < indexOffset ≤
-  fileSize`, `maxFrameBytes` ≤ 96 KB. Any failure → specific refusal reason
-  surfaced in UI and `video status`.
+- Open-time validation: magic, version, headerBytes, width ≤ 310 (the picture
+  area) and height ≤ 448 (the panel), fps 1–30, audioRateHz sane,
+  `dataOffset < indexOffset ≤ fileSize`, `maxFrameBytes` ≤ 96 KB. Any
+  failure → specific refusal reason surfaced in UI and `video status`.
 
 ## Rendering & input (sideways)
 
-- Frame blit at `x=58, y=0` — 252 px wide, full 448 px tall; two 58 px strips
-  read as above/below the picture once the device is turned.
+- Frame blit centered in the 310×448 picture area (left of the 58 px chrome
+  strip), both axes — `x=(310-width)/2, y=(448-height)/2`. A 16:9 frame is
+  252 wide, so `x=29`, filling the full 448 px height (`y=0`); a 4:3 frame is
+  ~310 wide and ~412 tall, so `x≈0` and `y≈18` — centered with a thin margin
+  instead of a fixed pillarbox.
 - Chrome (title, scrub bar, time, battery) is rendered into a **448×58
   off-screen canvas** in normal landscape text orientation with existing Theme
   helpers, then transposed onto the main canvas (~26k px, ~1 ms) — only when
@@ -198,11 +206,13 @@ off size field                off size field
 
 `./scripts/pack-video.sh input.mkv [output.lcv]`:
 
-1. ffmpeg pass: `-vf "scale=-2:252:force_original_aspect_ratio=decrease,
-   pad=448:252:(ow-iw)/2:0,transpose=1,fps=15" -c:v mjpeg -q:v 7` → frames;
-   `-ac 1 -ar 22050 -f s16le` → audio. (Exact filter chain finalized during
-   implementation; requirement: 252×448 pre-rotated baseline JPEGs, 15 fps,
-   22.05 kHz mono s16le.)
+1. ffmpeg pass: `-vf "scale=w=448:h=310:force_original_aspect_ratio=decrease:
+   force_divisible_by=2,transpose=1,fps=15" -c:v mjpeg -q:v 7` → frames;
+   `-ac 1 -ar 22050 -f s16le` → audio. Frames are fit into the 448×310
+   landscape picture box by aspect ratio, never padded: a 16:9 source lands
+   at 252×448 pre-rotated (the original fixed geometry), a 4:3 source at
+   ~310×412. Requirement: pre-rotated baseline JPEGs ≤ 310×448, 15 fps,
+   22.05 kHz mono s16le.
 2. `lcv_mux.py` interleaves frame groups, writes header + index, computes
    `maxFrameBytes` and `durationMs`.
 3. Output copied to the card under `/littlecube/video/<Show>/`.

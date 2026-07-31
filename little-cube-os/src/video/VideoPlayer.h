@@ -9,6 +9,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
+#include "../board_config.h"
 #include "LcvReader.h"
 
 class AudioAdapter;
@@ -37,6 +38,15 @@ class VideoPlayer {
   // pushes — one clobbered frame per ~17 s.) Public because the reader task
   // (a friend free function) sizes its wait loop against it.
   static constexpr uint8_t kRingSlots = 4;
+
+  // The player chrome occupies a strip on the panel's right edge (portrait
+  // space); frames are centered in what remains so the picture and chrome
+  // never overlap. VideoApp::kChromeH must equal kChromeStripPx. The values
+  // themselves live in board_config.h ("video player layout") so LcvReader
+  // — the lower layer, which VideoPlayer includes but must not be included
+  // by — can validate stored frame size without depending on this class.
+  static constexpr int16_t kChromeStripPx = kVideoChromeStripPx;
+  static constexpr int16_t kPictureAreaW = kVideoPictureAreaW;  // 310
 
   void begin(AudioAdapter* audio, DisplayAdapter* display, SdStorage* storage);
 

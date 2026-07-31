@@ -358,9 +358,11 @@ bool VideoPlayer::decodeFrame(uint8_t slot) {
     return false;
   }
   jpegTarget = gfx;
-  // Frames are stored pre-rotated by the packer; center on the panel's
-  // short axis.
-  const int16_t offsetX = static_cast<int16_t>((DISPLAY_WIDTH - header_.width) / 2);
+  // Frames are stored pre-rotated by the packer. Center in the picture area
+  // (left of the chrome strip), both axes: the packer fits by aspect now, so
+  // height is not always the full panel.
+  const int16_t offsetX = static_cast<int16_t>((kPictureAreaW - header_.width) / 2);
+  const int16_t offsetY = static_cast<int16_t>((DISPLAY_HEIGHT - header_.height) / 2);
   if (!jpegDecoder->openRAM(slots_[slot], static_cast<int>(slotBytes_[slot]),
                             jpegDrawBlock)) {
     return false;
@@ -368,7 +370,7 @@ bool VideoPlayer::decodeFrame(uint8_t slot) {
   // If colors come out wrong on device, switch to RGB565_BIG_ENDIAN — the
   // canvas framebuffer byte order is the only open question here.
   jpegDecoder->setPixelType(RGB565_LITTLE_ENDIAN);
-  const int ok = jpegDecoder->decode(offsetX, 0, 0);
+  const int ok = jpegDecoder->decode(offsetX, offsetY, 0);
   jpegDecoder->close();
   if (ok != 1) {
     return false;

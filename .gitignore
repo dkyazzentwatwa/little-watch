@@ -2,3 +2,7 @@ build/
 dist/
 .DS_Store
 *.bin.tmp
+
+# Python bytecode from scripts/
+__pycache__/
+*.pyc

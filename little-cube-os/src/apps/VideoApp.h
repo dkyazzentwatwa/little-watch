@@ -9,6 +9,7 @@
 #include "../services/VideoService.h"
 #include "../ui/StatusBar.h"
 #include "../ui/widgets/Widgets.h"
+#include "../video/VideoPlayer.h"
 
 class Arduino_Canvas;
 
@@ -56,7 +57,7 @@ class VideoApp : public App {
   void formatMs(uint32_t ms, char* out, size_t len) const;
 
   static constexpr int16_t kChromeW = 448;  // landscape chrome canvas
-  static constexpr int16_t kChromeH = 58;   // = the panel strip width
+  static constexpr int16_t kChromeH = VideoPlayer::kChromeStripPx;  // = the panel strip width
   static constexpr uint32_t kChromeHideMs = 4000;
   static constexpr uint32_t kSaveEveryMs = 5000;
   static constexpr int32_t kSeekStepMs = 15000;

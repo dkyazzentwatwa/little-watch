@@ -44,9 +44,12 @@ bool LcvReader::parse(const uint8_t* raw, LcvHeader& out, uint32_t fileSize, cha
   out.indexOffset = rd32(raw + 28);
   out.dataOffset = rd32(raw + 32);
   out.maxFrameBytes = rd32(raw + 36);
-  if (out.width == 0 || out.width > DISPLAY_WIDTH || out.height == 0 ||
-      out.height > DISPLAY_HEIGHT) {
-    reason(reasonOut, reasonLen, "frame size exceeds panel");
+  if (out.width == 0 || out.width > kVideoPictureAreaW) {
+    reason(reasonOut, reasonLen, "frame too wide for the picture area");
+    return false;
+  }
+  if (out.height == 0 || out.height > DISPLAY_HEIGHT) {
+    reason(reasonOut, reasonLen, "frame too tall for the panel");
     return false;
   }
   if (out.fps == 0 || out.fps > 30 || out.audioChannels != 1 || out.audioRateHz < 8000 ||

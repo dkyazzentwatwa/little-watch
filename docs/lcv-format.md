@@ -16,8 +16,8 @@ All integers little-endian.
 | 0   | 4    | magic | `LCV1` |
 | 4   | 2    | version | 1 |
 | 6   | 2    | headerBytes | 64 |
-| 8   | 2    | width | rotated frame width as stored on disk (252) |
-| 10  | 2    | height | rotated frame height as stored on disk (448) |
+| 8   | 2    | width | rotated frame width as stored on disk; <= 310 (the panel's picture area left of the chrome strip) |
+| 10  | 2    | height | rotated frame height as stored on disk; <= 448 |
 | 12  | 2    | fps | 1–30 (15) |
 | 14  | 2    | audioChannels | 1 |
 | 16  | 4    | audioRateHz | 22050; must be divisible by fps |
@@ -27,6 +27,11 @@ All integers little-endian.
 | 32  | 4    | dataOffset | >= 64 |
 | 36  | 4    | maxFrameBytes | largest video payload; <= 98304 (96 KB) |
 | 40  | 24   | reserved | zero |
+
+Frames are fit to the 448×310 landscape picture box by aspect ratio, never
+padded: a 16:9 source lands at 252×448 stored, a 4:3 source lands at roughly
+310×412. `scripts/lcv_mux.py` derives width/height from the first frame's
+JPEG SOF marker rather than trusting a caller-supplied value.
 
 ## Chunks
 

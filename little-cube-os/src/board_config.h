@@ -98,6 +98,17 @@ constexpr uint16_t COLOR_GOOD = 0x07E0;
 constexpr uint16_t COLOR_WARN = 0xFD20;
 constexpr uint16_t COLOR_BAD = 0xF800;
 
+// --- Video player layout ------------------------------------------------------
+// The player chrome occupies a strip on the panel's right edge (portrait
+// space); video frames are centered in what remains so the picture and
+// chrome never overlap. Shared by LcvReader (validates stored frame size)
+// and VideoPlayer (centers the decoded frame) — kept here, not in either of
+// those headers, because LcvReader must not depend on VideoPlayer (it is the
+// lower layer: VideoPlayer includes LcvReader, not the reverse).
+// VideoApp::kChromeH must equal kVideoChromeStripPx.
+constexpr int16_t kVideoChromeStripPx = 58;
+constexpr int16_t kVideoPictureAreaW = DISPLAY_WIDTH - kVideoChromeStripPx;  // 310
+
 // --- Identity / persistence ----------------------------------------------------
 constexpr const char* FIRMWARE_NAME = "Little Cube OS";
 constexpr const char* FIRMWARE_VERSION = "0.1.0";
