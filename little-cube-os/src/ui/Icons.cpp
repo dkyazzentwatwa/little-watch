@@ -33,6 +33,15 @@ void strokeRect(Arduino_GFX& gfx, int16_t x, int16_t y, int16_t w, int16_t h, in
 constexpr int8_t kRayCos[8] = {127, 90, 0, -90, -127, -90, 0, 90};
 constexpr int8_t kRaySin[8] = {0, 90, 127, 90, 0, -90, -127, -90};
 
+// Unit perpendicular step for each ray direction (a 90-degree rotation of
+// kRayCos/kRaySin, sign only). The /128 tables above truncate to 0 for the
+// diagonal rays at small thicknesses, so thickening needs its own table
+// rather than reusing them.
+constexpr int8_t kPerpX[8] = {0, -1, -1, -1, 0, 1, 1, 1};
+constexpr int8_t kPerpY[8] = {1, 1, 0, -1, -1, -1, 0, 1};
+
+// Needs size >= 28: below that stroke()'s t clamps to 2 and q + 3t exceeds
+// size/2, pushing rays past the box. Irrelevant at the sizes this app uses.
 void sunDisc(Arduino_GFX& gfx, int16_t cx, int16_t cy, int16_t r, int16_t t,
              uint16_t color) {
   gfx.fillCircle(cx, cy, r, color);
@@ -43,8 +52,14 @@ void sunDisc(Arduino_GFX& gfx, int16_t cx, int16_t cy, int16_t r, int16_t t,
     const int16_t y0 = cy + static_cast<int16_t>(inner * kRaySin[i] / 128);
     const int16_t x1 = cx + static_cast<int16_t>(outer * kRayCos[i] / 128);
     const int16_t y1 = cy + static_cast<int16_t>(outer * kRaySin[i] / 128);
+    // Thicken perpendicular to the ray, not along x: an x-only offset draws
+    // duplicate scanlines on horizontal rays and under-thickens diagonals.
+    // Centre the offset so the ray sits on its true radial line.
     for (int16_t o = 0; o < t; o++) {
-      gfx.drawLine(x0 + o, y0, x1 + o, y1, color);
+      const int16_t k = o - t / 2;
+      const int16_t ox = static_cast<int16_t>(k * kPerpX[i]);
+      const int16_t oy = static_cast<int16_t>(k * kPerpY[i]);
+      gfx.drawLine(x0 + ox, y0 + oy, x1 + ox, y1 + oy, color);
     }
   }
 }
@@ -54,11 +69,41 @@ void sunDisc(Arduino_GFX& gfx, int16_t cx, int16_t cy, int16_t r, int16_t t,
 void cloudPuff(Arduino_GFX& gfx, int16_t x, int16_t y, int16_t w, uint16_t color) {
   const int16_t r = w / 4;
   const int16_t baseY = y + r + r / 2;
+  // Crown radius is r + r/4, not the more dramatic r + r/3 it might look
+  // like it wants: centring the crown so its top edge lands exactly on y
+  // (required to stop it overflowing above the box) pushes its bottom edge
+  // down too, and r + r/3 pushes that bottom edge past the box in the
+  // WxPartlyCloudy call, which starts this helper higher inside its box
+  // than the other five callers do.
+  const int16_t crownR = r + r / 4;
   gfx.fillCircle(x + r, baseY, r, color);
-  gfx.fillCircle(x + w - r, baseY, r, color);
-  gfx.fillCircle(x + w / 2, y + r, r + r / 3, color);
+  gfx.fillCircle(x + w - r - 1, baseY, r, color);  // w - r would land one past the right edge
+  gfx.fillCircle(x + w / 2, y + crownR, crownR, color);
   gfx.fillRect(x + r, baseY, w - 2 * r, r, color);
 }
+
+struct ConditionEntry {
+  const char* name;
+  IconId id;
+};
+
+// Exact matches against conditionFromWmo()'s closed output set. Matching is
+// exact, so "Snow" and "Snow showers" cannot shadow each other and the order
+// of this table carries no meaning. constexpr (rather than a function-local
+// static const) keeps this in .rodata and lets the compiler enforce it, no
+// __cxa_guard_acquire on every call.
+constexpr ConditionEntry kConditionTable[] = {
+    {"Clear", IconId::WxClear},
+    {"Mostly clear", IconId::WxPartlyCloudy},
+    {"Overcast", IconId::WxCloudy},
+    {"Fog", IconId::WxFog},
+    {"Drizzle", IconId::WxRain},
+    {"Rain", IconId::WxRain},
+    {"Showers", IconId::WxRain},
+    {"Snow", IconId::WxSnow},
+    {"Snow showers", IconId::WxSnow},
+    {"Thunderstorm", IconId::WxThunder},
+};
 
 }  // namespace
 
@@ -210,7 +255,10 @@ void draw(Arduino_GFX& gfx, IconId id, int16_t x, int16_t y, int16_t size, uint1
       break;
     }
     case IconId::WxPartlyCloudy: {
-      sunDisc(gfx, x + q + t, y + q, q - t, t, color);
+      // sunDisc reaches r + 3t from its centre; with r = q - t that's q + 2t,
+      // so the centre needs to sit at least q + 2t from the top-left corner.
+      // Moved rather than shrunk, or the disc reads as a dot at small sizes.
+      sunDisc(gfx, x + q + t * 2, y + q + t * 2, q - t, t, color);
       cloudPuff(gfx, x + q / 2, cy - q / 4, size - q / 2, color);
       break;
     }
@@ -224,7 +272,7 @@ void draw(Arduino_GFX& gfx, IconId id, int16_t x, int16_t y, int16_t size, uint1
       for (int i = 0; i < 3; i++) {
         const int16_t dx = x + q - t + static_cast<int16_t>(i) * q;
         for (int16_t o = 0; o < t; o++) {
-          gfx.drawLine(dx + o, y + size - q, dx - q / 3 + o, y + size, color);
+          gfx.drawLine(dx + o, y + size - q, dx - q / 3 + o, y + size - 1, color);
         }
       }
       break;
@@ -243,14 +291,16 @@ void draw(Arduino_GFX& gfx, IconId id, int16_t x, int16_t y, int16_t size, uint1
       const int16_t bx = cx;
       const int16_t by = y + size - q * 2;
       gfx.fillTriangle(bx + q / 2, by, bx - q / 2, by + q, bx + t, by + q, color);
-      gfx.fillTriangle(bx + q / 2, by + q, bx - q / 3, by + q * 2, bx - t, by + q, color);
+      gfx.fillTriangle(bx + q / 2, by + q, bx - q / 3, y + size - 1, bx - t, by + q, color);
       break;
     }
     case IconId::WxFog: {
       cloudPuff(gfx, x, y, size, color);
       // Three staggered bars: fog is the cloud, sitting on the ground.
+      // Anchored from the bottom so the stagger can't run past the box —
+      // anchoring from the top (y + size - q) did, growing with size.
       for (int i = 0; i < 3; i++) {
-        const int16_t by = y + size - q + static_cast<int16_t>(i) * (t * 2);
+        const int16_t by = y + size - t - static_cast<int16_t>(2 - i) * (t * 2);
         const int16_t inset = static_cast<int16_t>(i) * q / 2;
         gfx.fillRect(x + inset, by, size - inset * 2, t, color);
       }
@@ -263,26 +313,7 @@ IconId forCondition(const char* condition) {
   if (condition == nullptr) {
     return IconId::WxCloudy;
   }
-  struct Entry {
-    const char* name;
-    IconId id;
-  };
-  // Exact matches against conditionFromWmo()'s closed output set. Matching is
-  // exact, so "Snow" and "Snow showers" cannot shadow each other and the order
-  // of this table carries no meaning.
-  static const Entry kTable[] = {
-      {"Clear", IconId::WxClear},
-      {"Mostly clear", IconId::WxPartlyCloudy},
-      {"Overcast", IconId::WxCloudy},
-      {"Fog", IconId::WxFog},
-      {"Drizzle", IconId::WxRain},
-      {"Rain", IconId::WxRain},
-      {"Showers", IconId::WxRain},
-      {"Snow", IconId::WxSnow},
-      {"Snow showers", IconId::WxSnow},
-      {"Thunderstorm", IconId::WxThunder},
-  };
-  for (const Entry& e : kTable) {
+  for (const ConditionEntry& e : kConditionTable) {
     if (strcmp(condition, e.name) == 0) {
       return e.id;
     }
