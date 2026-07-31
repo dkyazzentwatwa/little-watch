@@ -184,7 +184,7 @@ Sections: Wi-Fi, Display (brightness, auto-dim, timeout, bedtime, always-on, clo
 
 Internal flash (NVS/LittleFS): device config, UI prefs, secured Wi-Fi credentials, alarms, last screen, recovery metadata, small indexes, boot state. SD: notes, recordings, music, podcasts, radio presets, calendar, contacts, documents, exports, backups, caches. **SD not required to boot.**
 
-Tree: `/littlecube/{notes/{text,audio},recordings,music,podcasts/{feeds,downloads},radio,calendar,contacts,documents,exports,backups,cache,system/{indexes,recovery}}`.
+Tree: `/littlecube/{notes/{text,audio},recordings,music,podcasts/{feeds,downloads},radio,video,calendar,contacts,documents,exports,backups,cache,system/{indexes,recovery}}`.
 
 `SdCardState`: NotPresent, Mounting, Mounted, ReadOnly, UnsupportedFilesystem, Corrupted, Full, RemovedUnexpectedly, Error — always specific, never generic.
 

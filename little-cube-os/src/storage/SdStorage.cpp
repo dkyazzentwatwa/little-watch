@@ -78,7 +78,7 @@ void SdStorage::resetTreeCursor() {
 }
 
 // One directory per call so tree creation can be spread across frames instead
-// of stalling the loop with 19 filesystem round-trips at once.
+// of stalling the loop with 20 filesystem round-trips at once.
 bool SdStorage::ensureTreeStep() {
   const uint8_t total = sizeof(kTree) / sizeof(kTree[0]);
   if (card_ == nullptr || !card_->writable()) {

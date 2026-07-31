@@ -16,14 +16,14 @@ All integers little-endian.
 | 0   | 4    | magic | `LCV1` |
 | 4   | 2    | version | 1 |
 | 6   | 2    | headerBytes | 64 |
-| 8   | 2    | width | pre-rotated frame width (252) |
-| 10  | 2    | height | pre-rotated frame height (448) |
+| 8   | 2    | width | rotated frame width as stored on disk (252) |
+| 10  | 2    | height | rotated frame height as stored on disk (448) |
 | 12  | 2    | fps | 1–30 (15) |
 | 14  | 2    | audioChannels | 1 |
 | 16  | 4    | audioRateHz | 22050; must be divisible by fps |
 | 20  | 4    | frameCount | > 0 |
 | 24  | 4    | durationMs | frameCount * 1000 / fps |
-| 28  | 4    | indexOffset | > dataOffset, + 4*frameCount <= file size |
+| 28  | 4    | indexOffset | must satisfy indexOffset > dataOffset and indexOffset + 4*frameCount <= file size |
 | 32  | 4    | dataOffset | >= 64 |
 | 36  | 4    | maxFrameBytes | largest video payload; <= 98304 (96 KB) |
 | 40  | 24   | reserved | zero |
