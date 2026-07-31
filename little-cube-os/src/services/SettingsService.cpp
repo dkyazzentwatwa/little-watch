@@ -145,6 +145,12 @@ void SettingsService::load() {
   // the default before any caller ever observes the stale value. clockFace()
   // only ever returns an already-clamped value. Untrusted NVS data, so this
   // stays silent (unlike the setter's out-of-range branch, which is a bug).
+  //
+  // PRECONDITION for the setters' unchanged-value early return: this default
+  // must stay equal to the member's in-class initializer. They agree at 0
+  // today, so a first-boot setClockFace(0) can skip the write and the next
+  // boot still reads 0. Change one without the other and the early return
+  // silently drops a write that was genuinely needed.
   clockFace_ = prefs.getUChar(kKeyClockFace, 0);
   if (clockFace_ >= clockfaces::kFaceCount) {
     clockFace_ = 0;

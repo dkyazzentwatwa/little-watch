@@ -629,6 +629,22 @@ git commit -m "UI: QR rendering on the core's bundled encoder, no new dependency
 
 ## Task 4: Persisted clock-face setting
 
+> ⚠️ **The steps below are SUPERSEDED and kept only as a record.** They
+> describe a duplicated `kClockFaceCount` in `SettingsService.cpp`'s anonymous
+> namespace guarded by a `static_assert`. Review rejected both: the cloned
+> `themeIndex` template does not duplicate anything (it includes `ui/Theme.h`
+> and reads `theme::kThemeCount` directly), and the assert compared a literal
+> against itself, catching one drift mode of three while missing the
+> out-of-bounds one.
+>
+> **What actually shipped:** `FaceId` and `kFaceCount` live in
+> `little-cube-os/src/ui/ClockFaces.h`; `SettingsService.cpp` includes it
+> beside `ui/Theme.h`; there is no duplicated constant and no assert. Both
+> setters also gained an unchanged-value early return (a per-frame caller
+> would otherwise exhaust the NVS partition in ~15 days), and `clockface` is
+> wired into the `settings` serial family so Task 5's persistence gate is
+> assertable over serial rather than only visually.
+
 **Files:**
 - Modify: `little-cube-os/src/services/SettingsService.h`
 - Modify: `little-cube-os/src/services/SettingsService.cpp`
@@ -735,7 +751,8 @@ count.** An earlier draft of this plan put the header under `apps/` and had
 
 Task 4 therefore already created `little-cube-os/src/ui/ClockFaces.h` holding
 `FaceId` and `kFaceCount`. **This task extends that file; it does not create
-it, and nothing goes under `ui/ClockFaces.h`.**
+it, and nothing goes under `apps/ClockFaces.h` — that path does not exist and
+must not be created.**
 
 - [ ] **Step 1: Extend `little-cube-os/src/ui/ClockFaces.h`**
 

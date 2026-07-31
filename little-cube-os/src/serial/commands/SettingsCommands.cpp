@@ -169,7 +169,8 @@ void printSettingsHelp() {
   Serial.printf("  clockface          0-%u — selects the Clock app face (Task 5)\n",
                 (unsigned)(clockfaces::kFaceCount - 1));
   Serial.println("  weather.city       town name, e.g. London — geocoded over Wi-Fi");
-  Serial.println("values out of range are clamped, and the stored value is printed back.");
+  Serial.println("the stored value is printed back after every set. Numeric ranges are");
+  Serial.println("clamped; enumerated keys (theme, clockface) reject out-of-range instead.");
   Serial.println("Wi-Fi credentials are not here: see 'help wifi'.");
 }
 
