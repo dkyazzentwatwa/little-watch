@@ -151,6 +151,33 @@ performing the step on the device and observing the described result.
       multiline note -> reboot -> note persists -> phone Wi-Fi setup ->
       weather updates -> record voice note -> play it back
 
+## Screen polish — foundation (Tasks 1-4)
+
+**2026-07-31 session.** Flashed the foundation build (`widgets::footer()`,
+weather glyphs, QR wrapper, persisted clock face) and exercised it over serial.
+
+⚠️ **Nothing visual is verified by this session, because nothing visual
+changed.** All four foundation pieces are still uncalled — the linker
+garbage-collects `footer()`, `qrcode::draw()` and the glyph mapper while no
+screen references them. The device renders exactly as it did before. The
+footer geometry, the `kSafeInset` bezel assumption, and the glyph shapes all
+remain unverified until Task 5 puts a face on screen.
+
+- [x] Firmware boots after the foundation work; `version` answers
+      `Little Cube OS 0.1.0`, `uptime` counts from reset (2026-07-31)
+- [x] `settings list` includes `clockface`, picked up from `kKeys[]` rather
+      than hand-printed (2026-07-31)
+- [x] `settings set clockface 3` → `reboot` → `settings get clockface` returns
+      `3`. NVS persistence confirmed on device, not inferred (2026-07-31)
+- [x] `settings set clockface 9` is refused with
+      `usage: settings set clockface <0-5>` and leaves the stored value
+      untouched — enumerated keys reject rather than clamp (2026-07-31)
+- [ ] Face selection survives a reboot **through the UI** (tap to cycle, not
+      serial) — needs Task 5
+- [ ] The unchanged-value early return actually suppresses an NVS write
+      (needs an erase-count probe or a long soak; the serial round-trip above
+      cannot distinguish a skipped write from a performed one)
+
 ## Video (FEATURE_VIDEO)
 
 Prereq: at least one real `.lcv` on the card under `/littlecube/video/`
