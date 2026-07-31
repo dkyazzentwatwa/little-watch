@@ -5,6 +5,7 @@ mux:     concatenated-MJPEG stream + raw s16le mono PCM  ->  .lcv
 inspect: print and sanity-check a .lcv header and index
 """
 import argparse
+import os
 import struct
 import sys
 
@@ -19,8 +20,10 @@ MAX_FRAME_BYTES = 96 * 1024
 def split_jpegs(data: bytes):
     """Split a concatenated MJPEG stream on SOI/EOI markers.
 
-    Inside JPEG entropy data every 0xFF is stuffed with 0x00, so a literal
-    FFD9 is always a real end-of-image — splitting on it is safe.
+    Inside JPEG entropy-coded data every 0xFF is stuffed with 0x00, so a
+    literal FFD9 is a real end-of-image — this holds for ffmpeg's plain
+    mjpeg encoder output (short APP0/COM only), not for arbitrary JPEGs
+    that may carry FFD9 bytes inside large APPn/EXIF/ICC payloads.
     """
     frames = []
     i = 0
@@ -45,10 +48,17 @@ def chunk(ctype: int, payload: bytes) -> bytes:
 
 
 def mux(args):
-    with open(args.video, "rb") as f:
-        frames = split_jpegs(f.read())
-    with open(args.audio, "rb") as f:
-        pcm = f.read()
+    if args.fps < 1:
+        sys.exit("error: --fps must be >= 1")
+    if args.rate < 1:
+        sys.exit("error: --rate must be >= 1")
+    try:
+        with open(args.video, "rb") as f:
+            frames = split_jpegs(f.read())
+        with open(args.audio, "rb") as f:
+            pcm = f.read()
+    except OSError as e:
+        sys.exit(f"error: {e}")
     if not frames:
         sys.exit("error: no JPEG frames found in video stream")
     if args.rate % args.fps != 0:
@@ -80,16 +90,25 @@ def mux(args):
         index_offset, HEADER_BYTES, max_frame)
     assert len(header) == HEADER_BYTES
     out[:HEADER_BYTES] = header
-    with open(args.output, "wb") as f:
-        f.write(out)
+
+    tmp_path = args.output + ".tmp"
+    try:
+        with open(tmp_path, "wb") as f:
+            f.write(out)
+        os.replace(tmp_path, args.output)
+    except OSError as e:
+        sys.exit(f"error: {e}")
     print(f"wrote {args.output}: {len(frames)} frames, "
           f"{len(frames) * 1000 // args.fps} ms, maxFrame {max_frame} B, "
           f"{len(out)} B total")
 
 
 def inspect(args):
-    with open(args.file, "rb") as f:
-        data = f.read()
+    try:
+        with open(args.file, "rb") as f:
+            data = f.read()
+    except OSError as e:
+        sys.exit(f"error: {e}")
     if len(data) < HEADER_BYTES:
         sys.exit("error: file shorter than header")
     (magic, version, header_bytes, width, height, fps, channels, rate,
@@ -107,12 +126,18 @@ def inspect(args):
           and index_offset + 4 * frame_count <= len(data)
           and 0 < max_frame <= MAX_FRAME_BYTES)
     # Every index entry must point at a video chunk header.
-    for n in range(frame_count):
-        off = struct.unpack_from("<I", data, index_offset + 4 * n)[0]
-        if off + 4 > index_offset or data[off] != CHUNK_VIDEO:
-            print(f"BAD index entry {n}: offset {off}")
-            ok = False
-            break
+    if ok:
+        for n in range(frame_count):
+            entry_off = index_offset + 4 * n
+            if entry_off + 4 > len(data):
+                print(f"BAD index entry {n}: entry out of bounds")
+                ok = False
+                break
+            off = struct.unpack_from("<I", data, entry_off)[0]
+            if off < data_offset or off + 4 > index_offset or data[off] != CHUNK_VIDEO:
+                print(f"BAD index entry {n}: offset {off}")
+                ok = False
+                break
     print("OK" if ok else "INVALID")
     sys.exit(0 if ok else 1)
 

@@ -6,6 +6,8 @@ set -euo pipefail
 # 448x252 letterboxed, rotated 90 CW (transpose=1) to 252x448 so frames land
 # on the portrait panel with no runtime rotation; 15 fps; 22.05 kHz mono PCM.
 
+command -v ffmpeg >/dev/null 2>&1 || { echo "error: ffmpeg not found — brew install ffmpeg" >&2; exit 127; }
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IN="${1:?usage: pack-video.sh input.mkv [output.lcv]}"
 OUT="${2:-${IN%.*}.lcv}"

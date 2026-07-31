@@ -126,6 +126,8 @@ git commit -m "Video: FEATURE_VIDEO flag, /littlecube/video root, JPEGDEC depend
 
 ### Task 2: Mac-side tooling — muxer + pack script (host-testable)
 
+*Shipped version hardened beyond this listing (bounds-checked inspect, error handling, atomic writes) — see git history for scripts/lcv_mux.py.*
+
 **Files:**
 - Create: `scripts/lcv_mux.py`
 - Create: `scripts/pack-video.sh`
