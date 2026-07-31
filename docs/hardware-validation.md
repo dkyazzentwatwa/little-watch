@@ -157,13 +157,24 @@ Prereq: at least one real `.lcv` on the card under `/littlecube/video/`
 (`./scripts/pack-video.sh episode.mkv`), verified `OK` by
 `scripts/lcv_mux.py inspect` on the computer first.
 
-- [ ] `video list` over serial shows the file with the correct duration
-- [ ] Library UI lists it; tap starts playback; device turned sideways shows
-      the picture upright and filling the panel's long axis
-- [ ] Colors correct (if red/blue swap: flip the `setPixelType` endianness
-      in `VideoPlayer.cpp::decodeFrame`)
-- [ ] Chrome reads the same way up as the picture (if upside-down: apply the
-      transpose flip noted in `VideoApp.cpp::renderChrome`)
+**2026-07-31 session** — packed a real 23-minute 4:3 anime episode from `.mp4`
+and played it on the cube. Observed over serial during playback:
+`252x448@15fps shown=57 dropped=0 ring=4` at 0:03, `shown=111 dropped=2` at
+0:07 — ~14 fps sustained against the 15 fps target, ring staying full (SD
+read-ahead has headroom). Codec came up at 22050 Hz. Items below checked from
+that session; unchecked items were not exercised.
+
+- [x] `video list` over serial shows the file with the correct duration
+      (`23:10  HXH 1999 Dub EP. 1.lcv`)
+- [x] Library UI lists it; tap starts playback; device turned sideways shows
+      the picture upright and filling the panel's long axis (4:3 source is
+      letterboxed inside the frame by ffmpeg's pad — expected, not a fault)
+- [x] Colors correct (if red/blue swap: flip the `setPixelType` endianness
+      in `VideoPlayer.cpp::decodeFrame`) — no swap; RGB565_LITTLE_ENDIAN is
+      correct for this panel
+- [x] Chrome reads the same way up as the picture (if upside-down: apply the
+      transpose flip noted in `VideoApp.cpp::renderChrome`) — transpose
+      handedness correct as written
 - [ ] Lip-sync: dialogue matches mouths after 5+ minutes of playback
       (audio-master check; tune `kDmaDepthSamples` in `VideoPlayer.h` if
       video leads/trails)
@@ -184,7 +195,9 @@ Prereq: at least one real `.lcv` on the card under `/littlecube/video/`
       the folder auto-plays; the LAST file in a folder returns to the library
 - [ ] Serial `video play` while the app is open on the library: adopts to
       the player screen within a tick
-- [ ] `video status` reports sane fps/shown/dropped/ring during playback
+- [x] `video status` reports sane fps/shown/dropped/ring during playback
+- [ ] Volume: the chrome's `-`/`+` buttons and left/right swipes both change
+      level, and `vol NN%` appears in the readout for ~1.5 s
 - [ ] Recording refusal both directions (`video play` during a recording;
       recording start during playback)
 - [ ] Card yank mid-play: specific error state, no hang; recorder still
