@@ -15,7 +15,10 @@ class SdStorage;
 // family call in, nothing runs from the render path.
 struct VideoInfo {
   char path[160] = "";
-  char name[64] = "";
+  // 64 chars + NUL. MUST match the sort-key name budget in list() and the
+  // page anchors VideoApp builds from this field — a name truncated shorter
+  // than the key re-includes its row at a page boundary.
+  char name[65] = "";
   uint32_t durationMs = 0;  // 0 for directories
   bool isDir = false;
 };

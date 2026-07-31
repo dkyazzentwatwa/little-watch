@@ -94,6 +94,9 @@ size_t VideoService::list(const char* dir, VideoInfo* out, size_t maxItems, size
 
   // Directories sort before files: prefix the sort key with 0/1. The key
   // buffer mirrors pageAnchors_ usage in VideoApp (after uses the same form).
+  // Keys carry at most 64 name chars (matching VideoInfo::name). Two files
+  // identical in their first 64 characters can still misbehave at a page
+  // edge — same latent cap MusicService has at 63; accepted.
   auto makeKey = [](bool isDir, const char* name, char* key, size_t keyLen) {
     key[0] = isDir ? '0' : '1';
     strncpy(key + 1, name, keyLen - 2);
@@ -190,7 +193,7 @@ bool VideoService::sibling(const char* currentPath, bool forward, char* outPath,
     }
     return false;
   }
-  char best[64] = "";
+  char best[65] = "";
   for (fs::File entry = d.openNextFile(); entry; entry = d.openNextFile()) {
     if (!entry.isDirectory() && isLcvName(entry.name())) {
       const char* name = entry.name();

@@ -1278,6 +1278,8 @@ git commit -m "Video: JPEGDEC frame decode into the frame canvas"
 
 ### Task 7: VideoService — library, resume, queue
 
+*Shipped version fixes a name-budget mismatch beyond this listing (VideoInfo::name 65, sibling best 65) — see git history.*
+
 **Files:**
 - Create: `little-cube-os/src/services/VideoService.h`
 - Create: `little-cube-os/src/services/VideoService.cpp`
