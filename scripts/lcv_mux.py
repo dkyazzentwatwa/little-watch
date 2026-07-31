@@ -103,6 +103,7 @@ def inspect(args):
     ok = (magic == MAGIC and version == VERSION and header_bytes == HEADER_BYTES
           and 0 < fps <= 30 and channels == 1 and rate % fps == 0
           and frame_count > 0 and data_offset >= HEADER_BYTES
+          and index_offset > data_offset
           and index_offset + 4 * frame_count <= len(data)
           and 0 < max_frame <= MAX_FRAME_BYTES)
     # Every index entry must point at a video chunk header.
