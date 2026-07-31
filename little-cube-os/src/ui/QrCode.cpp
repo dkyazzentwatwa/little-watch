@@ -9,19 +9,28 @@ namespace qrcode {
 namespace {
 
 // Espressif's encoder supports QR versions up to 40, but this panel's pixel
-// budget is the real ceiling: past roughly version 27 the module size drops
-// below kMinModulePx even at the widest box this UI offers, so codes beyond
-// that could never scan regardless of how much text they hold. 17 leaves
-// headroom for a URL that keeps a real query parameter after tracker
-// stripping (Task 10 only strips keys it recognizes) while keeping the
-// transient calloc small — 905 B here vs. 408 B at the upstream default of
-// 10 (see ESP_QRCODE_CONFIG_DEFAULT() below); that lopsided cost-to-capacity
-// spread is the tell that memory was never the binding constraint, pixels
-// were. This explicitly overrides the default rather than tightening it, so
-// a future core bump changing that default can't silently move our ceiling.
+// budget is the real ceiling, not memory. In Task 10's 260 px box v26 lands
+// at 2 px/module and v27 at 1 px, so anything past ~27 could never scan no
+// matter how much text it holds. (That cutoff is derived from 260 px — a
+// wider QR page would move it, so re-derive rather than trusting the number.)
+//
+// 17 leaves headroom for a URL that keeps a real query parameter after
+// tracker stripping, since Task 10 only strips keys it recognizes. The
+// transient cost of raising the cap is small: esp_qrcode_generate() callocs
+// TWO buffers of BUFFER_LEN_FOR_VERSION(cap), so 2 x 905 = 1810 B at v17
+// against 2 x 408 = 816 B at the upstream default of 10. (Do not confuse
+// that 905 with gCache's 905 below — same number, different quantity: one is
+// transient and doubled, the other is a single static.)
+//
+// This explicitly overrides the default rather than tightening it, so a
+// future core bump changing that default can't silently move our ceiling.
 // Raising it costs nothing for short URLs either: the IDF wrapper pins
 // minVersion to 1, so max_qrcode_version is a ceiling, not a target — the
 // encoder still picks the smallest version that fits.
+//
+// ⚠ Device-gate note for Task 10: v16 and v17 both render at exactly
+// kMinModulePx in a 260 px box, so the capacity this raise buys sits entirely
+// in the 2 px regime. Scan a near-cap URL on hardware, not just a short one.
 constexpr int kMaxVersion = 17;
 
 // Below 2px a module cannot be reliably resolved by a phone camera on this
@@ -30,8 +39,14 @@ constexpr int kMaxVersion = 17;
 constexpr int16_t kMinModulePx = 2;
 
 // qrcodegen's bit-packed buffer size for a given version: side = v*4+17
-// modules per edge, one bit per module, rounded up to a byte, plus one
-// spare byte (the encoder's own BUFFER_LEN_FOR_VERSION macro).
+// modules per edge, one bit per module, rounded up to a byte, plus one byte
+// (the encoder's own BUFFER_LEN_FOR_VERSION macro).
+//
+// That extra byte is NOT spare — it is the leading size byte at qrcode[0].
+// qrcodegen_getSize() returns it and getModule() indexes from qrcode[1]
+// onward, which is exactly why esp_qrcode_get_size() still works on the
+// copied buffer in the cache-hit path below. Copying anything less would
+// break that.
 constexpr size_t bufferLenForVersion(int version) {
   const int side = version * 4 + 17;
   return static_cast<size_t>((side * side + 7) / 8 + 1);
@@ -40,13 +55,19 @@ constexpr size_t bufferLenForVersion(int version) {
 // 905 bytes at kMaxVersion == 17.
 constexpr size_t kCacheBufferLen = bufferLenForVersion(kMaxVersion);
 
-// Version 17 byte-mode capacity is 619 characters at ECC LOW; +1 for the
-// null terminator. URLs almost always encode in byte mode here (mixed case,
-// '.', '/', '%'-escapes all fall outside the QR alphanumeric set), so byte
-// capacity is the number that matters, not the larger alphanumeric/numeric
-// limits — and it means any text that successfully encodes is guaranteed to
-// fit this cache slot too.
-constexpr size_t kCacheTextCap = 620;
+// Version 17 byte-mode capacity is 644 characters at ECC LOW (815 codewords
+// less 6 blocks x 28 EC = 647 data codewords = 5176 bits, less 20 bits of
+// byte-mode overhead); +1 for the null terminator. URLs almost always encode
+// in byte mode here — mixed case, '.', '/', '%'-escapes all fall outside the
+// QR alphanumeric set.
+//
+// This slot does NOT fit everything that can encode. qrcodegen picks the mode
+// itself, and at v17-L alphanumeric holds 938 and numeric 1547 — both past
+// this cap. draw() therefore refuses to cache text it cannot key whole,
+// rather than storing a truncated key: two different strings sharing a
+// 644-character prefix would otherwise collide and render each other's code,
+// which scans perfectly to the wrong URL.
+constexpr size_t kCacheTextCap = 645;
 
 // Encoded-QR cache: a static page (e.g. a news article's QR) gets repainted
 // every time SystemState::version ticks — clock-minute rollover, the AMOLED
@@ -78,6 +99,12 @@ int gPendingCopiedSize = 0;
 // that does the fit math and the fillRect loop.
 bool renderBuffer(Arduino_GFX& gfx, int16_t x, int16_t y, int16_t maxSizePx, uint16_t fg,
                    uint16_t bg, const uint8_t* buffer, int size) {
+  // Unreachable while gCacheValid holds, but a size of 0 would otherwise fill
+  // a blank light square and return true — reporting a successful draw for
+  // nothing, which is the one thing this file refuses to do.
+  if (size <= 0) {
+    return false;
+  }
   const int16_t totalModules = static_cast<int16_t>(size) + 8;
   const int16_t module = maxSizePx / totalModules;
   if (module < kMinModulePx) {
@@ -181,9 +208,17 @@ bool draw(Arduino_GFX& gfx, int16_t x, int16_t y, int16_t maxSizePx, const char*
     return false;
   }
 
-  strncpy(gCacheText, text, kCacheTextCap - 1);
-  gCacheText[kCacheTextCap - 1] = '\0';
-  gCacheValid = true;
+  // Only cache text short enough to key WHOLE. A truncated key can collide:
+  // a later string equal to the stored prefix would hit and render this
+  // code — a QR that scans cleanly to the wrong URL. Longer text still
+  // renders correctly, it just re-encodes each repaint.
+  const size_t len = strlen(text);
+  if (len < kCacheTextCap) {
+    memcpy(gCacheText, text, len + 1);
+    gCacheValid = true;
+  } else {
+    gCacheValid = false;
+  }
 
   return renderBuffer(gfx, x, y, maxSizePx, fg, bg, gCache, gPendingCopiedSize);
 }
