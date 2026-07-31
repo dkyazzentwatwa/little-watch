@@ -211,5 +211,7 @@ that session; unchecked items were not exercised.
       pausing lets it dim/blank normally
 - [ ] Tapping a corrupt/truncated .lcv shows its specific refusal reason as a
       toast
-- [ ] 4:3 source packs to ~310x412 and fills noticeably more of the panel
+- [x] 4:3 source packs to 310x414 and fills noticeably more of the panel
       than a 16:9 episode; picture never runs under the chrome strip
+      (2026-07-31: a 480x360 season repacked to 310x414 — user-confirmed
+      "screen full size now", ~1.5x the visible area of the padded 252x448)
