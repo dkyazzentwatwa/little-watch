@@ -45,6 +45,10 @@ class AudioAdapter {
   // and half-duplex rule as WAV playback — never plays while recording.
   bool playMusicFile(const char* path);
   bool requestPlayMusicFile(const char* path);
+  // Live MP3/ICY radio playback. The URL is kept in RAM only; radio never
+  // writes the stream to SD.
+  bool playRadio(const char* url, const char* stationName);
+  bool requestPlayRadio(const char* url, const char* stationName);
   // True when the last playback ended because the track finished, not because
   // it was stopped. The Music UI reads this on the playing->idle edge to
   // auto-advance without advancing on a user stop.
@@ -66,6 +70,14 @@ class AudioAdapter {
   bool isPlaying() const { return playState_ != PlayState::Idle; }
   bool playbackIdle() const { return playState_ == PlayState::Idle; }
   const char* playingPath() const { return playPath_; }
+  bool isRadioPlaying() const { return radioPlaying_; }
+  const char* radioStationName() const { return radioStation_; }
+  const char* radioUrl() const { return radioUrl_; }
+  const char* radioStatus() const { return radioStatus_; }
+  const char* radioMetadata() const { return radioMetadata_; }
+  // Called by ESP8266Audio callbacks running on the radio task.
+  void noteRadioStatus(const char* status);
+  void noteRadioMetadata(const char* title);
   void playTone(uint16_t freqHz, uint16_t durationMs);
   void setVolumePercent(uint8_t percent);
   uint8_t volumePercent() const { return volume_; }
@@ -121,6 +133,7 @@ class AudioAdapter {
   friend void audioRecordTask(void* arg);
   friend void audioPlayTask(void* arg);
   friend void audioMusicTask(void* arg);
+  friend void audioRadioTask(void* arg);
 
   bool ensureStarted(uint32_t sampleRate);
   void setPa(bool on);
@@ -160,6 +173,13 @@ class AudioAdapter {
   char pendingPath_[128] = "";
   bool pendingPlay_ = false;
   bool pendingMusic_ = false;  // the queued play is a decoded track, not a WAV
+  bool pendingRadio_ = false;
+
+  volatile bool radioPlaying_ = false;
+  char radioUrl_[128] = "";
+  char radioStation_[64] = "";
+  char radioStatus_[64] = "idle";
+  char radioMetadata_[96] = "";
 
   uint8_t volume_ = 70;
 };

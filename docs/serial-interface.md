@@ -49,7 +49,7 @@ family verb arg arg ...
 ## Families
 
 `help` with no argument prints the index. `help <topic>` prints the full
-listing for `notes`, `files`, `storage`, `wifi`, `recordings`, `audio`,
+listing for `notes`, `files`, `storage`, `wifi`, `recordings`, `audio`, `radio`,
 `calendar`, `contacts` and `settings`. Other topics report that no detailed
 help exists yet.
 
@@ -170,6 +170,23 @@ seconds later. `storage mount` is the way back.
 | `wifi offline on\|off` | radio kill-switch |
 
 SSIDs longer than 32 characters are rejected as usage errors.
+
+### radio
+
+Radio is live MP3 playback over Wi-Fi. Presets are stored on the SD card in
+`/littlecube/radio/stations.txt`, one per line as `Name|http://stream-url`.
+Only direct HTTP URLs are accepted in v1 because the installed stream source
+uses a plain network client. The stream is never recorded or cached to SD.
+
+| Command | Effect |
+|---|---|
+| `radio list` | list station presets; creates the default test list when missing |
+| `radio add "Name" "http://..."` | append a direct HTTP MP3 station |
+| `radio remove <id>` | remove a preset by its `radio list` number |
+| `radio play <id>` | stop current playback and start the station |
+| `radio pause` / `radio resume` | mute or resume the live stream |
+| `radio stop` | stop the live stream |
+| `radio status` | show connection state, URL, and ICY title metadata |
 
 #### The password prompt
 

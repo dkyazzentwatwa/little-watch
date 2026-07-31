@@ -60,8 +60,8 @@ void AudioApp::onOpen() {
 void AudioApp::onResume() {
   // Playback keeps running in the background on purpose, so a list screen can
   // have gone stale (a serial delete, a card swap, or a track finishing while
-  // the app was away). The category and coming-soon screens are static.
-  if (screen_ == Screen::Recordings || isTrackScreen()) {
+  // the app was away).
+  if (screen_ == Screen::Recordings || isTrackScreen() || isRadioScreen()) {
     refreshList();
     syncPlayingIndex();
   }
@@ -73,6 +73,14 @@ const char* AudioApp::currentTrackDir() const {
 }
 
 void AudioApp::refreshList() {
+  if (isRadioScreen()) {
+    radioCount_ = 0;
+    totalRadioStations_ = 0;
+    if (services_.radio != nullptr) {
+      radioCount_ = services_.radio->list(radioStations_, kMaxListed, &totalRadioStations_);
+    }
+    return;
+  }
   if (isTrackScreen()) {
     trackCount_ = 0;
     totalTracks_ = 0;
@@ -116,6 +124,16 @@ void AudioApp::syncPlayingIndex() {
   playingIndex_ = -1;
   AudioAdapter* audio = services_.audio;
   if (audio == nullptr || !audio->isPlaying()) {
+    return;
+  }
+  if (isRadioScreen() && audio->isRadioPlaying()) {
+    const char* cur = audio->radioUrl();
+    for (size_t i = 0; i < listCount(); i++) {
+      if (strcmp(rowPath(i), cur) == 0) {
+        playingIndex_ = static_cast<int>(i);
+        return;
+      }
+    }
     return;
   }
   const char* cur = audio->playingPath();
@@ -185,7 +203,7 @@ void AudioApp::update(uint32_t deltaMs) {
   }
 
   // Keep the highlight/label fresh about once a second while something plays.
-  if ((screen_ == Screen::Recordings || isTrackScreen()) && audio != nullptr &&
+  if ((screen_ == Screen::Recordings || isTrackScreen() || isRadioScreen()) && audio != nullptr &&
       audio->isPlaying()) {
     tickMs_ += deltaMs;
     if (tickMs_ >= 1000) {
@@ -225,6 +243,9 @@ void AudioApp::render() {
     case Screen::Podcasts:
       title = "Podcasts";
       break;
+    case Screen::Radio:
+      title = "Radio";
+      break;
     default:
       break;
   }
@@ -244,25 +265,12 @@ void AudioApp::render() {
     gfx.setTextSize(theme::kTextSizeSmall);
     gfx.setTextColor(theme::kTextDim);
     gfx.setCursor(theme::kPadding, DISPLAY_HEIGHT - 28);
-    gfx.print("radio: a later phase");
     display->markDirty();  // without this the canvas is drawn but never flushed
     return;
   }
 
-  if (screen_ == Screen::ComingSoon) {
-    widgets::textBlock(gfx, theme::kPadding, kTop + 60, w,
-                       "Internet radio (station streaming) is on the roadmap. Recordings, "
-                       "Music, and Podcasts already play from the SD card today.",
-                       theme::kTextSizeSmall, theme::kTextDim);
-    gfx.setTextSize(theme::kTextSizeBody);
-    gfx.setTextColor(theme::kText);
-    gfx.setCursor(theme::kPadding, kTop + 30);
-    gfx.print(comingSoonWhat_);
-    display->markDirty();
-    return;
-  }
-
-  // Shared player for Recordings (WAV) / Music / Podcasts (decoded tracks).
+  // Shared player for Recordings (WAV), Music/Podcasts (decoded tracks), and
+  // Radio (live MP3 stations).
   AudioAdapter* audio = services_.audio;
   const bool playing = audio != nullptr && audio->isPlaying();
 
@@ -285,7 +293,10 @@ void AudioApp::render() {
   if (listCount() == 0) {
     const bool noCard = services_.sdCard != nullptr && !services_.sdCard->mounted();
     const char* msg;
-    if (screen_ == Screen::Music) {
+    if (screen_ == Screen::Radio) {
+      msg = noCard ? "No SD card. Insert one with /littlecube/radio/stations.txt."
+                   : "No stations yet. Add stations over serial with radio add.";
+    } else if (screen_ == Screen::Music) {
       msg = noCard ? "No SD card. Insert a card with music in /littlecube/music."
                    : "No music yet. Copy audio files to /littlecube/music.";
     } else if (screen_ == Screen::Podcasts) {
@@ -314,7 +325,7 @@ void AudioApp::render() {
       snprintf(pager, sizeof(pager), "%u-%u of %u · swipe up/down", (unsigned)first,
                (unsigned)(first + listCount() - 1), (unsigned)listTotal());
     } else {
-      const char* noun = isTrackScreen() ? "track" : "recording";
+      const char* noun = isTrackScreen() ? "track" : (isRadioScreen() ? "station" : "recording");
       snprintf(pager, sizeof(pager), "%u %s%s", (unsigned)listTotal(), noun,
                listTotal() == 1 ? "" : "s");
     }
@@ -338,6 +349,20 @@ void AudioApp::render() {
   gfx.setCursor(DISPLAY_WIDTH / 2 - 20, controlsY + 66);
   gfx.print(vol);
 
+  if (isRadioScreen() && audio->isRadioPlaying()) {
+    char rawStatus[228];
+    snprintf(rawStatus, sizeof(rawStatus), "%s: %s%s%s", audio->radioStationName(),
+             audio->radioStatus(), audio->radioMetadata()[0] ? " · " : "",
+             audio->radioMetadata());
+    char status[128];
+    clipToWidth(status, sizeof(status), rawStatus, w);
+    widgets::textBlock(gfx, theme::kPadding, controlsY - 48, w, status,
+                       theme::kTextSizeSmall, theme::kTextDim);
+  } else if (isRadioScreen() && strcmp(audio->radioStatus(), "idle") != 0) {
+    widgets::textBlock(gfx, theme::kPadding, controlsY - 48, w, audio->radioStatus(),
+                       theme::kTextSizeSmall, theme::kTextDim);
+  }
+
   display->markDirty();
 }
 
@@ -357,8 +382,10 @@ bool AudioApp::handleInput(const InputEvent& event) {
               screen_ = Screen::Podcasts;
               break;
             default:
-              comingSoonWhat_ = kCategories[3];  // Radio
-              screen_ = Screen::ComingSoon;
+              screen_ = Screen::Radio;
+              page_ = 0;
+              refreshList();
+              syncPlayingIndex();
               dirty_ = true;
               return true;
           }
@@ -380,10 +407,6 @@ bool AudioApp::handleInput(const InputEvent& event) {
     screen_ = Screen::Categories;
     dirty_ = true;
     return true;
-  }
-
-  if (screen_ == Screen::ComingSoon) {
-    return event.action == InputAction::Tap;
   }
 
   // Paging through the list window (newest-first recordings, alphabetical tracks).
@@ -434,8 +457,18 @@ bool AudioApp::handleInput(const InputEvent& event) {
     }
     for (size_t i = 0; i < listCount(); i++) {
       if (rowRects_[i].contains(event.x, event.y)) {
-        const bool ok = isTrackScreen() ? audio->requestPlayMusicFile(rowPath(i))
-                                        : audio->requestPlayWavFile(rowPath(i));
+        bool ok = false;
+        if (isRadioScreen()) {
+          if (services_.state == nullptr || !services_.state->internet) {
+            audio->noteRadioStatus("no internet");
+          } else {
+            ok = services_.radio != nullptr &&
+                 audio->requestPlayRadio(rowPath(i), rowName(i));
+          }
+        } else {
+          ok = isTrackScreen() ? audio->requestPlayMusicFile(rowPath(i))
+                               : audio->requestPlayWavFile(rowPath(i));
+        }
         if (ok) {
           playingIndex_ = static_cast<int>(i);
         }

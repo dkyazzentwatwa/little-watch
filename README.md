@@ -1,56 +1,57 @@
 # Little Cube OS
 
-A calm, Wi-Fi-enabled personal information device for the **Waveshare
-ESP32-S3-Touch-AMOLED-1.8** cube. Clock, weather, notes, voice recorder,
-audio, calendar — glanceable on the 1.8″ AMOLED, with USB serial as the
-keyboard and the SD card as the content store. Not a tiny smartphone.
+Little Cube OS turns the Waveshare ESP32-S3-Touch-AMOLED-1.8 into a small,
+calm personal information device. It is designed for quick glances and focused
+actions, not for becoming a tiny smartphone.
 
-- The display is the calm interface.
-- USB serial handles typing.
-- Wi-Fi handles connected information.
-- SD stores your content.
+The cube puts useful information close at hand:
+
+- Check the time, weather, calendar, news, and daily overview.
+- Read and write notes, browse files, and manage contacts.
+- Record a voice note, review its transcription, save the approved text as a normal note, play audio, and read longer content.
+- Listen to live MP3 internet radio from editable SD-card station presets.
+- Ask the assistant questions using the cube's microphone and speaker.
+- Use the touchscreen for navigation and USB serial when typing is useful.
+
+Your content lives on the device's microSD card. Wi-Fi is used for connected
+features such as weather, news, time updates, and assistant requests. The
+device is intended to remain useful when those connections are unavailable.
 
 ## Hardware
 
-Waveshare ESP32-S3-Touch-AMOLED-1.8 — ESP32-S3R8, 8 MB OPI PSRAM, 16 MB
-flash, SH8601 AMOLED 368×448 (QSPI), FT3168 touch, ES8311 audio codec with
-mic + speaker, microSD (SD_MMC 1-bit), AXP2101 PMU, PCF85063 RTC, QMI8658
-IMU. All pins and init sequences in this repo are verified against working
-firmware for this exact board — see `little-cube-os/src/board_config.h`.
+This project is built for the **Waveshare ESP32-S3-Touch-AMOLED-1.8**, with a
+368×448 AMOLED display, touchscreen, microphone, speaker, RTC, Wi-Fi, and
+microSD storage. It is not currently a generic ESP32 application. Use the
+exact board listed above.
 
-## Build (Arduino CLI only)
+## Try it
+
+The firmware is built and installed with Arduino CLI. The complete setup and
+hardware workflow is in [technical.md](technical.md).
 
 ```bash
-export LITTLECUBE_FQBN="esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,USBMode=hwcdc,CDCOnBoot=cdc,PartitionScheme=custom"
-export LITTLECUBE_PORT="/dev/cu.usbmodem101"   # arduino-cli board list
-
-./scripts/install-libraries.sh   # esp32 core 3.3.8 + libraries (one-time)
-./scripts/build.sh               # compile
-./scripts/upload.sh              # flash (handles the 1200-baud reset dance)
-./scripts/monitor.sh             # serial console @115200
+./scripts/install-libraries.sh  # first time only
+./scripts/build.sh
+./scripts/upload.sh
+./scripts/monitor.sh
 ```
 
-No PlatformIO, no CMake, no ESP-IDF project structure.
+The scripts require the board's FQBN and connected USB port. See the technical
+guide before running them.
 
-## Repository layout
+## Project status
 
-```
-little-cube-os/        Arduino sketch (little-cube-os.ino + src/**)
-libraries/             vendored Arduino_DriveBus (FT3168 touch)
-scripts/               build / upload / monitor / install-libraries
-docs/                  product spec + design docs + hardware validation
-```
+Little Cube OS is under active development. Recording, playback, microphone
+capture, and several assistant flows have been tested on the physical cube.
+Other display, touch, SD-card, provisioning, and reliability behaviors remain
+on the validation checklist. See [docs/hardware-validation.md](docs/hardware-validation.md)
+for the current evidence instead of assuming that a successful build means a
+feature is finished.
 
-## Status
+## Learn more
 
-Under active development. See `docs/product-spec.md` for the full
-specification and `docs/hardware-validation.md` for what has actually been
-verified on hardware (nothing is marked done without physical testing).
-
-| Doc | What it covers |
-|---|---|
-| `docs/product-spec.md` | the contract; code cites it as "spec §N" |
-| `docs/arduino-cli-setup.md` | toolchain, FQBN, libraries, the 1200-baud upload quirk |
-| `docs/serial-interface.md` | every implemented serial command, multiline entry, the Wi-Fi prompt |
-| `docs/amoled-protection.md` | spec §37 burn-in defense as implemented |
-| `docs/hardware-validation.md` | what has been physically tested — the only source of "works" |
+- [technical.md](technical.md) for setup, architecture, and development
+- [docs/product-spec.md](docs/product-spec.md) for the product contract
+- [docs/serial-interface.md](docs/serial-interface.md) for serial commands
+- [docs/hardware-validation.md](docs/hardware-validation.md) for device testing
+- [AGENTS.md](AGENTS.md) for contributor guidelines

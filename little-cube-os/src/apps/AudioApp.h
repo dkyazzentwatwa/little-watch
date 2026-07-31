@@ -4,6 +4,7 @@
 #include "../core/Services.h"
 #include "../services/MusicService.h"
 #include "../services/RecorderService.h"
+#include "../services/RadioService.h"
 #include "../ui/StatusBar.h"
 #include "../ui/widgets/Widgets.h"
 
@@ -11,9 +12,9 @@
 // fully playable in v1 — the same transport UI (rows + play / pause / stop /
 // volume + paging) over three sources: RecorderService for recordings,
 // MusicService for the /littlecube/music and /littlecube/podcasts/downloads
-// libraries. Only Radio is still an honest ComingSoon (station streaming is a
-// later phase). Music and Podcasts auto-advance to the next track when one
-// finishes on its own; recordings never auto-advance.
+// libraries. Radio is a live station list backed by RadioService. Music and
+// Podcasts auto-advance to the next track when one finishes on its own;
+// recordings and radio never auto-advance.
 class AudioApp : public App {
  public:
   explicit AudioApp(Services& services) : services_(services) {}
@@ -33,12 +34,13 @@ class AudioApp : public App {
     Recordings,
     Music,
     Podcasts,
-    ComingSoon,
+    Radio,
   };
 
   // Music and Podcasts share every bit of player logic; only the source
   // directory and the empty-state wording differ.
   bool isTrackScreen() const { return screen_ == Screen::Music || screen_ == Screen::Podcasts; }
+  bool isRadioScreen() const { return screen_ == Screen::Radio; }
   const char* currentTrackDir() const;
 
   void refreshList();
@@ -53,19 +55,30 @@ class AudioApp : public App {
 
   // Screen-agnostic views over whichever list is active, so render(), paging,
   // and tap handling need no per-screen branching.
-  size_t listCount() const { return isTrackScreen() ? trackCount_ : recordingCount_; }
-  size_t listTotal() const { return isTrackScreen() ? totalTracks_ : totalRecordings_; }
+  size_t listCount() const {
+    if (isTrackScreen()) return trackCount_;
+    if (isRadioScreen()) return radioCount_;
+    return recordingCount_;
+  }
+  size_t listTotal() const {
+    if (isTrackScreen()) return totalTracks_;
+    if (isRadioScreen()) return totalRadioStations_;
+    return totalRecordings_;
+  }
   const char* rowName(size_t i) const {
-    return isTrackScreen() ? tracks_[i].name : recordings_[i].name;
+    if (isTrackScreen()) return tracks_[i].name;
+    if (isRadioScreen()) return radioStations_[i].name;
+    return recordings_[i].name;
   }
   const char* rowPath(size_t i) const {
-    return isTrackScreen() ? tracks_[i].path : recordings_[i].path;
+    if (isTrackScreen()) return tracks_[i].path;
+    if (isRadioScreen()) return radioStations_[i].url;
+    return recordings_[i].path;
   }
 
   Services& services_;
   StatusBar statusBar_;
   Screen screen_ = Screen::Categories;
-  const char* comingSoonWhat_ = "";
   bool dirty_ = true;
   uint32_t lastStateVersion_ = 0xFFFFFFFF;
   uint32_t tickMs_ = 0;
@@ -82,6 +95,9 @@ class AudioApp : public App {
   TrackInfo tracks_[kMaxListed];
   size_t trackCount_ = 0;
   size_t totalTracks_ = 0;
+  RadioStationInfo radioStations_[kMaxListed];
+  size_t radioCount_ = 0;
+  size_t totalRadioStations_ = 0;
   // Sized to TrackInfo::name so a long music filename survives as a paging
   // anchor; recording names (<= 48) fit with room to spare.
   char pageAnchors_[kMaxPages][64] = {};

@@ -148,6 +148,10 @@ void SerialCommandService::printHelp(const char* topic) {
       printAudioHelp();
       return;
     }
+    if (strcmp(topic, "radio") == 0) {
+      printRadioHelp();
+      return;
+    }
     if (strcmp(topic, "calendar") == 0) {
       printCalendarHelp();
       return;
@@ -187,6 +191,7 @@ void SerialCommandService::printHelp(const char* topic) {
   Serial.println("  STORAGE    status · mount · eject · usage");
   Serial.println("  WI-FI      scan · connect · status · disconnect · forget · offline");
   Serial.println("  AUDIO      list · play <n> · pause · resume · stop · next · previous");
+  Serial.println("  RADIO      list · add · remove · play · pause · resume · stop · status");
   Serial.println("  RECORDINGS list · start · stop · gain · normalize · gate · delete");
   Serial.println("  ASSISTANT  status · key · ask <q> · voice · transcribe · reset");
   Serial.println("  CALENDAR   list · show · next · add · done · delete");
@@ -388,6 +393,14 @@ void SerialCommandService::handleLine(char* line) {
       printAudioHelp();
     } else if (!handleAudioCommand(*services_, verb, cursor)) {
       Serial.printf("error: unknown command 'audio %s'\n", verb);
+    }
+    return;
+  }
+  if (strcmp(family, "radio") == 0) {
+    if (verb == nullptr) {
+      printRadioHelp();
+    } else if (!handleRadioCommand(*services_, verb, cursor)) {
+      Serial.printf("error: unknown command 'radio %s' — try 'help radio'\n", verb);
     }
     return;
   }

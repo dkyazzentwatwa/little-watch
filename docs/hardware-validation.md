@@ -61,6 +61,13 @@ performing the step on the device and observing the described result.
 - [x] Recording tested (10 s -> valid .wav on SD, plays on a computer; 12 s takes pulled via `files dump`, CRC-verified, clean spectrum — 2026-07-26)
 - [x] Audio playback tested (recorded WAV plays through the speaker — confirmed by ear, 2026-07-26)
 - [ ] Volume control tested
+- [ ] Radio station presets load from `/littlecube/radio/stations.txt`
+- [ ] Radio France test streams connect and play audible MP3 audio
+- [ ] Radio pause, resume, stop, and station switching tested
+- [ ] Radio ICY metadata/status appears when provided by the station
+- [ ] Radio reconnect tested after a temporary network drop
+- [ ] Radio stops when Wi-Fi enters offline/no-internet mode
+- [ ] Starting a recording while radio is active is refused cleanly
 
 ## Assistant (voice AI)
 
@@ -72,6 +79,8 @@ performing the step on the device and observing the described result.
 - [ ] Full tap-talk-listen loop on the fixed firmware (talk button, Back-cancel)
 - [ ] Error surfaces on-screen in the Assistant app (not only over serial)
 - [ ] Offline / missing-key / no-SD refusals show their specific messages
+- [ ] Notes voice flow: record -> transcribe -> review -> save creates a readable `.md` note on SD
+- [ ] Notes voice flow: discard leaves no text note and keeps the WAV available in Recorder
 
 ## Card safety (async eject + mid-write removal)
 

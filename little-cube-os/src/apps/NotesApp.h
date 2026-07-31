@@ -6,9 +6,10 @@
 #include "../ui/StatusBar.h"
 #include "../ui/widgets/Widgets.h"
 
-// Notes reader (spec §15): browse both note roots, open, scroll, hop
-// between notes, resize text, favorite (long-press a list row), delete
-// behind an explicit confirm modal. Writing happens over USB serial.
+// Notes reader and voice capture (spec §15): browse both note roots, open,
+// scroll, hop between notes, resize text, favorite (long-press a list row),
+// delete behind an explicit confirm modal, or record -> transcribe -> approve
+// a normal SD-backed Markdown note.
 class NotesApp : public App {
  public:
   explicit NotesApp(Services& services) : services_(services) {}
@@ -18,7 +19,7 @@ class NotesApp : public App {
   void onPause() override;
   void onResume() override;
 
-  void update(uint32_t deltaMs) override { (void)deltaMs; }
+  void update(uint32_t deltaMs) override;
   void render() override;
   bool handleInput(const InputEvent& event) override;
 
@@ -27,6 +28,11 @@ class NotesApp : public App {
     List,
     Reading,
     ConfirmDelete,
+    VoiceRecording,
+    VoiceFinishing,
+    VoiceTranscribing,
+    VoiceApprove,
+    VoiceError,
   };
 
   void refreshList();
@@ -39,9 +45,18 @@ class NotesApp : public App {
   void renderList(Arduino_GFX& gfx);
   void renderReading(Arduino_GFX& gfx);
   void renderConfirmDelete(Arduino_GFX& gfx);
+  void renderVoiceRecording(Arduino_GFX& gfx);
+  void renderVoiceTranscribing(Arduino_GFX& gfx);
+  void renderVoiceApprove(Arduino_GFX& gfx);
+  void renderVoiceError(Arduino_GFX& gfx);
   bool handleList(const InputEvent& event);
   bool handleReading(const InputEvent& event);
   bool handleConfirmDelete(const InputEvent& event);
+  bool handleVoiceRecording(const InputEvent& event);
+  bool handleVoiceApprove(const InputEvent& event);
+  void updateVoiceFlow();
+  bool saveVoiceTranscript();
+  void failVoiceFlow(const char* message);
 
   Services& services_;
   StatusBar statusBar_;
@@ -58,6 +73,7 @@ class NotesApp : public App {
   size_t noteTotal_ = 0;  // notes on the card, which can exceed kMaxNotes
   size_t pageStart_ = 0;
   widgets::Rect rowRects_[kPageSize];
+  widgets::Rect voiceRect_;
 
   size_t openIndex_ = 0;
   String body_;
@@ -68,4 +84,13 @@ class NotesApp : public App {
   widgets::Rect deleteRect_;
   widgets::Rect confirmRect_;
   widgets::Rect cancelRect_;
+
+  widgets::Rect voiceStopRect_;
+  widgets::Rect voiceSaveRect_;
+  widgets::Rect voiceDiscardRect_;
+  char voiceRecordingPath_[128] = "";
+  char voiceTranscript_[512] = "";
+  char voiceError_[96] = "";
+  uint8_t lastVoiceAssistantState_ = 0xFF;
+  uint32_t voiceTickMs_ = 0;
 };

@@ -27,6 +27,7 @@ class BookService;
 class MusicService;
 class NewsService;
 class PodcastService;
+class RadioService;
 
 class SerialCommandService;
 
@@ -60,6 +61,7 @@ struct Services {
   BookService* books = nullptr;
   MusicService* music = nullptr;
   PodcastService* podcasts = nullptr;
+  RadioService* radio = nullptr;
 
   SerialCommandService* serial = nullptr;
 

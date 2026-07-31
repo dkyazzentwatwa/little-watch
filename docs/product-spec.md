@@ -162,7 +162,7 @@ Start/pause/resume/stop/playback/delete/favorite/rename-over-serial, duration, r
 
 ## 24. Audio App
 
-Categories: Music (`/littlecube/music/`), Podcasts (`/littlecube/podcasts/`), Radio (`/littlecube/radio/`), Recordings. Controls: play/pause/stop/prev/next/seek/volume/sleep timer/favorite/resume position. Only claim formats the chosen decoders support. Podcasts: manual RSS, episode list, stream or download (`.partial`), resume, delete; **no recommendation feed**. Radio: manual station URLs / preset file.
+Categories: Music (`/littlecube/music/`), Podcasts (`/littlecube/podcasts/`), Radio (`/littlecube/radio/`), Recordings. Controls: play/pause/stop/prev/next/seek/volume/sleep timer/favorite/resume position. Only claim formats the chosen decoders support. Podcasts: manual RSS, episode list, stream or download (`.partial`), resume, delete; **no recommendation feed**. Radio: live direct HTTP MP3 station URLs from `/littlecube/radio/stations.txt`, with no recording or SD cache; Wi-Fi is required.
 
 ## 25. Files App
 

@@ -434,6 +434,24 @@ bool AssistantService::transcribeOnly(const char* wavPath) {
   if (busy() || wavPath == nullptr) {
     return false;
   }
+  if (settings_ == nullptr || !settings_->hasOpenaiKey()) {
+    snprintf(lastError_, sizeof(lastError_), "no API key — run: assistant key");
+    state_ = State::Error;
+    if (systemState_ != nullptr) systemState_->version++;
+    return false;
+  }
+  if (systemState_ == nullptr || !systemState_->internet) {
+    snprintf(lastError_, sizeof(lastError_), "offline — connect Wi-Fi first");
+    state_ = State::Error;
+    if (systemState_ != nullptr) systemState_->version++;
+    return false;
+  }
+  if (card_ == nullptr || !card_->writable()) {
+    snprintf(lastError_, sizeof(lastError_), "transcription needs the SD card");
+    state_ = State::Error;
+    if (systemState_ != nullptr) systemState_->version++;
+    return false;
+  }
   strncpy(transcribePath_, wavPath, sizeof(transcribePath_) - 1);
   transcribePath_[sizeof(transcribePath_) - 1] = '\0';
   return launchWorker(Mode::TranscribeOnly);

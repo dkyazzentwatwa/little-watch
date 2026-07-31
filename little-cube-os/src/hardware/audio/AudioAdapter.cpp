@@ -14,6 +14,8 @@
 // driver for the peripheral); instead a small sink below feeds the already
 // proven ES8311/I2S path.
 #include <AudioFileSource.h>
+#include <AudioFileSourceBuffer.h>
+#include <AudioFileSourceICYStream.h>
 #include <AudioGeneratorAAC.h>
 #include <AudioGeneratorFLAC.h>
 #include <AudioGeneratorMP3.h>
@@ -124,6 +126,20 @@ class I2SMonoSink : public AudioOutput {
   int16_t buf_[kChunk * 2];
   size_t count_ = 0;
 };
+
+void radioStatusCallback(void* data, int /*code*/, const char* message) {
+  AudioAdapter* owner = static_cast<AudioAdapter*>(data);
+  if (owner != nullptr && message != nullptr) {
+    owner->noteRadioStatus(message);
+  }
+}
+
+void radioMetadataCallback(void* data, const char* type, bool /*unicode*/, const char* value) {
+  AudioAdapter* owner = static_cast<AudioAdapter*>(data);
+  if (owner != nullptr && value != nullptr && type != nullptr && strcmp(type, "StreamTitle") == 0) {
+    owner->noteRadioMetadata(value);
+  }
+}
 
 // --- Soft noise gate (downward expander) ------------------------------------
 // Pauses in a voice note are where the mic chain's hiss floor is most audible.
@@ -454,6 +470,63 @@ void audioMusicTask(void* arg) {
   vTaskDelete(nullptr);
 }
 
+// Live ICY MP3 radio through the same decoder and I2S sink as SD music. The
+// source owns reconnect attempts; the task remains non-blocking to the main
+// loop and exits through the same semaphore gate as every other playback task.
+void audioRadioTask(void* arg) {
+  AudioAdapter* self = static_cast<AudioAdapter*>(arg);
+  AudioFileSourceICYStream* src = new AudioFileSourceICYStream();
+  AudioFileSourceBuffer* buffer = nullptr;
+  AudioGeneratorMP3* gen = nullptr;
+  I2SMonoSink sink(self);
+
+  self->noteRadioStatus("connecting");
+  if (src != nullptr) {
+    src->RegisterStatusCB(radioStatusCallback, self);
+    src->RegisterMetadataCB(radioMetadataCallback, self);
+    src->SetReconnect(3, 1500);
+    if (src->open(self->radioUrl_)) {
+      buffer = new AudioFileSourceBuffer(src, 16384);
+      gen = new AudioGeneratorMP3();
+      if (buffer != nullptr && gen != nullptr) {
+        buffer->RegisterStatusCB(radioStatusCallback, self);
+        gen->RegisterStatusCB(radioStatusCallback, self);
+        if (gen->begin(buffer, &sink)) {
+          self->noteRadioStatus("playing");
+          while (!self->stopPlay_ && gen->isRunning()) {
+            while (self->playPaused_ && !self->stopPlay_) {
+              vTaskDelay(pdMS_TO_TICKS(20));
+            }
+            if (self->stopPlay_ || !gen->loop()) {
+              break;
+            }
+          }
+          gen->stop();
+        }
+      }
+    }
+  }
+  if (gen != nullptr) {
+    delete gen;
+  }
+  if (buffer != nullptr) {
+    buffer->close();
+    delete buffer;
+  }
+  if (src != nullptr) {
+    delete src;
+  }
+  if (self->stopPlay_) {
+    self->noteRadioStatus("stopped");
+  } else if (strcmp(self->radioStatus_, "playing") == 0) {
+    self->noteRadioStatus("stream ended");
+  }
+  self->radioPlaying_ = false;
+  self->playCompleted_ = false;
+  xSemaphoreGive(self->playDone_);
+  vTaskDelete(nullptr);
+}
+
 bool AudioAdapter::begin() {
   // Lazy: the codec powers up on first use, not at boot. The amp pin is
   // driven low here so it is defined from boot rather than floating.
@@ -572,6 +645,7 @@ bool AudioAdapter::playWavFile(const char* path) {
   stopPlay_ = false;
   playPaused_ = false;
   playCompleted_ = false;
+  radioPlaying_ = false;
   setPa(true);
   xSemaphoreTake(playDone_, 0);   // drain a stale give before arming
   playState_ = PlayState::Playing;  // published BEFORE the task can observe it
@@ -591,6 +665,7 @@ bool AudioAdapter::playMusicFile(const char* path) {
   stopPlay_ = false;
   playPaused_ = false;
   playCompleted_ = false;
+  radioPlaying_ = false;
   // The codec + I2S are (re)configured to the stream's real rate by the sink's
   // first SetRate -> musicConfigureRate; not here, where the rate is unknown.
   // A compressed decode (libmad/libflac) needs a far deeper stack than the
@@ -609,6 +684,50 @@ void AudioAdapter::musicConfigureRate(uint32_t hz) {
   setPa(true);
 }
 
+void AudioAdapter::noteRadioStatus(const char* status) {
+  if (status == nullptr) {
+    return;
+  }
+  strncpy(radioStatus_, status, sizeof(radioStatus_) - 1);
+  radioStatus_[sizeof(radioStatus_) - 1] = '\0';
+}
+
+void AudioAdapter::noteRadioMetadata(const char* title) {
+  if (title == nullptr) {
+    return;
+  }
+  strncpy(radioMetadata_, title, sizeof(radioMetadata_) - 1);
+  radioMetadata_[sizeof(radioMetadata_) - 1] = '\0';
+}
+
+bool AudioAdapter::playRadio(const char* url, const char* stationName) {
+  if (recState_ != RecState::Idle || playState_ != PlayState::Idle || url == nullptr ||
+      stationName == nullptr || url[0] == '\0' || stationName[0] == '\0') {
+    return false;
+  }
+  strncpy(radioUrl_, url, sizeof(radioUrl_) - 1);
+  radioUrl_[sizeof(radioUrl_) - 1] = '\0';
+  strncpy(radioStation_, stationName, sizeof(radioStation_) - 1);
+  radioStation_[sizeof(radioStation_) - 1] = '\0';
+  strncpy(playPath_, radioUrl_, sizeof(playPath_) - 1);
+  playPath_[sizeof(playPath_) - 1] = '\0';
+  radioMetadata_[0] = '\0';
+  noteRadioStatus("connecting");
+  radioPlaying_ = true;
+  stopPlay_ = false;
+  playPaused_ = false;
+  playCompleted_ = false;
+  xSemaphoreTake(playDone_, 0);
+  playState_ = PlayState::Playing;
+  if (xTaskCreate(audioRadioTask, "radio", 20480, this, 1, nullptr) != pdPASS) {
+    playState_ = PlayState::Idle;
+    radioPlaying_ = false;
+    noteRadioStatus("task failed");
+    return false;
+  }
+  return true;
+}
+
 // Stop-then-play without blocking the loop. The pending path is started by
 // update() on a later frame, once the old task has actually been reaped.
 bool AudioAdapter::requestPlayWavFile(const char* path) {
@@ -622,6 +741,7 @@ bool AudioAdapter::requestPlayWavFile(const char* path) {
   pendingPath_[sizeof(pendingPath_) - 1] = '\0';
   pendingPlay_ = true;  // one slot, last write wins
   pendingMusic_ = false;
+  pendingRadio_ = false;
   stopPlayback();
   return true;  // accepted, not yet started
 }
@@ -637,6 +757,25 @@ bool AudioAdapter::requestPlayMusicFile(const char* path) {
   pendingPath_[sizeof(pendingPath_) - 1] = '\0';
   pendingPlay_ = true;
   pendingMusic_ = true;
+  pendingRadio_ = false;
+  stopPlayback();
+  return true;
+}
+
+bool AudioAdapter::requestPlayRadio(const char* url, const char* stationName) {
+  if (url == nullptr || stationName == nullptr || recState_ != RecState::Idle) {
+    return false;
+  }
+  if (playState_ == PlayState::Idle) {
+    return playRadio(url, stationName);
+  }
+  strncpy(pendingPath_, url, sizeof(pendingPath_) - 1);
+  pendingPath_[sizeof(pendingPath_) - 1] = '\0';
+  strncpy(radioStation_, stationName, sizeof(radioStation_) - 1);
+  radioStation_[sizeof(radioStation_) - 1] = '\0';
+  pendingPlay_ = true;
+  pendingMusic_ = false;
+  pendingRadio_ = true;
   stopPlayback();
   return true;
 }
@@ -646,6 +785,9 @@ void AudioAdapter::stopPlayback() {
     playState_ = PlayState::Stopping;
   }
   stopPlay_ = true;
+  if (radioPlaying_) {
+    noteRadioStatus("stopping");
+  }
 }
 
 void AudioAdapter::setSleepTimerMinutes(uint32_t minutes) {
@@ -789,11 +931,14 @@ void AudioAdapter::update(uint32_t deltaMs) {
 
   if (pendingPlay_ && playState_ == PlayState::Idle && recState_ == RecState::Idle) {
     pendingPlay_ = false;
-    if (pendingMusic_) {
+    if (pendingRadio_) {
+      playRadio(pendingPath_, radioStation_);
+    } else if (pendingMusic_) {
       playMusicFile(pendingPath_);
     } else {
       playWavFile(pendingPath_);
     }
+    pendingRadio_ = false;
   }
 
   if (playState_ != PlayState::Idle || recState_ != RecState::Idle) {

@@ -21,6 +21,7 @@
 #include "../services/NewsService.h"
 #include "../services/NotesService.h"
 #include "../services/PodcastService.h"
+#include "../services/RadioService.h"
 #include "../services/OpenMeteoWeatherService.h"
 #include "../services/ProvisioningService.h"
 #include "../services/RecorderService.h"
@@ -60,6 +61,7 @@ AssistantService assistantService;
 BookService bookService;
 MusicService musicService;
 PodcastService podcastService;
+RadioService radioService;
 
 SerialCommandService serialCommandService;
 
@@ -213,6 +215,13 @@ void onSystemEvent(SystemEvent event, void* /*context*/) {
       // the user leaves and returns.
       systemState.version++;
       break;
+    case SystemEvent::InternetUnavailable:
+      // Live radio has no offline cache. Stop only the network stream; local
+      // SD playback remains usable while connectivity is down.
+      if (audioAdapter.isRadioPlaying()) {
+        audioAdapter.stopPlayback();
+      }
+      break;
     default:
       break;
   }
@@ -282,6 +291,7 @@ void wireServices() {
   services.books = &bookService;
   services.music = &musicService;
   services.podcasts = &podcastService;
+  services.radio = &radioService;
   services.serial = &serialCommandService;
   services.amoled = &amoledProtection;
   services.events = &eventBus;
@@ -356,6 +366,7 @@ void kernelSetup() {
   bookService.begin(&sdStorage);   // e-reader index; pull-only, no update() slot
   musicService.begin(&sdStorage);  // music/podcast library scan; pull-only
   podcastService.begin(&sdStorage, &wifiService, &eventBus);  // RSS/download on a task
+  radioService.begin(&sdStorage);
   recorderService.begin(&audioAdapter, &sdCardAdapter, &sdStorage, &eventBus, &systemState);
   assistantService.begin(&audioAdapter, &wifiService, &settingsService, &sdStorage,
                          &sdCardAdapter, &systemState);

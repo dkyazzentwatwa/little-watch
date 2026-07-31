@@ -13,6 +13,7 @@ constexpr const char* kMusic = "/littlecube/music";
 constexpr const char* kPodcastFeeds = "/littlecube/podcasts/feeds";
 constexpr const char* kPodcastDownloads = "/littlecube/podcasts/downloads";
 constexpr const char* kRadio = "/littlecube/radio";
+constexpr const char* kRadioStations = "/littlecube/radio/stations.txt";
 constexpr const char* kCalendar = "/littlecube/calendar";
 constexpr const char* kContacts = "/littlecube/contacts";
 constexpr const char* kDocuments = "/littlecube/documents";
