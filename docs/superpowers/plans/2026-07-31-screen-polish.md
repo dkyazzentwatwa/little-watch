@@ -49,6 +49,35 @@ from `drawLine` at a non-axis angle, or from repeated offset strokes, needs
 this. `fillTriangle` fills solid at any orientation and is the reliable way to
 draw a thick angled bar.
 
+## ⚠️ `render()` is NOT called once per screen entry
+
+Every app in this codebase early-outs with
+`if (!dirty_ && state.version == lastStateVersion_) return;`, which reads like
+"render only when something changed". It is easy to conclude from that a static
+screen renders once and then stops. **It does not.**
+
+`SystemState::version` moves on a timer, whether or not anything the user cares
+about changed:
+
+- `Kernel.cpp:497-499` — `amoledProtection.consumeShiftChanged()` bumps it every
+  **60 s** (`kShiftPeriodMs`), because the burn-in offsets moved.
+- `Kernel.cpp:141-146` — the `clockHhMm` string changes, so it bumps again every
+  **minute**.
+- Plus battery %, charging, Wi-Fi state, SD state, and service events.
+
+So a screen left open re-renders roughly **once or twice a minute, forever**.
+Anything expensive placed in `render()` becomes a recurring stall on that
+cadence, not a one-time cost paid on entry.
+
+This was found in Task 3's review, where the QR encoder — 8-35 ms of
+Reed-Solomon and mask evaluation against a ~33 ms frame budget — was documented
+as running "once per page entry" on exactly this mistaken reasoning. The fix is
+to cache the expensive result and let `render()` do only the cheap repaint.
+
+Applies to every task below: **`render()` may draw, and nothing else.** Layout,
+encoding, pagination and any I/O belong in `onOpen()`, `onResume()` or
+`update(deltaMs)`.
+
 ## How to verify in this repo
 
 **There is no unit-test suite and no host-side harness.** `CLAUDE.md` is explicit:
