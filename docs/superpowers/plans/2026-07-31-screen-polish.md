@@ -36,6 +36,19 @@ actually used at (`t = max(2, size/16)` changes with size, so a shape that fits
 at 56 can overflow at 96). A throwaway script that models the primitives'
 extents settles it in a second and is cheaper than a flash cycle.
 
+**But a bounds model is not enough.** Task 2's second review found a defect no
+bounding-box check can see: thickening a line by drawing offset copies works
+for axis-aligned lines and *fails* for 45° ones, because successive copies of a
+diagonal Bresenham line offset by `(±1, ±1)` touch only at corners. Four of the
+sun's eight rays rasterised as dotted chains while the box stayed correct.
+
+To catch that class you have to **rasterise**, not measure: compile the drawing
+code against a stub whose primitive bodies are taken verbatim from the vendored
+`GFX_Library_for_Arduino` source, and print the result as ASCII. Anything built
+from `drawLine` at a non-axis angle, or from repeated offset strokes, needs
+this. `fillTriangle` fills solid at any orientation and is the reliable way to
+draw a thick angled bar.
+
 ## How to verify in this repo
 
 **There is no unit-test suite and no host-side harness.** `CLAUDE.md` is explicit:
@@ -257,12 +270,6 @@ Place these after the existing `strokeRect()`:
 constexpr int8_t kRayCos[8] = {127, 90, 0, -90, -127, -90, 0, 90};
 constexpr int8_t kRaySin[8] = {0, 90, 127, 90, 0, -90, -127, -90};
 
-// Perpendicular unit steps per direction (kRayCos/kRaySin rotated 90°, sign
-// only). The /128 tables truncate to 0 at these magnitudes, so a perpendicular
-// derived from them would silently vanish.
-constexpr int8_t kPerpX[8] = {0, -1, -1, -1, 0, 1, 1, 1};
-constexpr int8_t kPerpY[8] = {1, 1, 0, -1, -1, -1, 0, 1};
-
 void sunDisc(Arduino_GFX& gfx, int16_t cx, int16_t cy, int16_t r, int16_t t,
              uint16_t color) {
   gfx.fillCircle(cx, cy, r, color);
@@ -273,15 +280,15 @@ void sunDisc(Arduino_GFX& gfx, int16_t cx, int16_t cy, int16_t r, int16_t t,
     const int16_t y0 = cy + static_cast<int16_t>(inner * kRaySin[i] / 128);
     const int16_t x1 = cx + static_cast<int16_t>(outer * kRayCos[i] / 128);
     const int16_t y1 = cy + static_cast<int16_t>(outer * kRaySin[i] / 128);
-    // Thicken perpendicular to the ray, not along x: an x-only offset draws
-    // duplicate scanlines on horizontal rays and under-thickens diagonals.
-    // Centre the offset so the ray sits on its true radial line.
-    for (int16_t o = 0; o < t; o++) {
-      const int16_t k = o - t / 2;
-      const int16_t ox = static_cast<int16_t>(k * kPerpX[i]);
-      const int16_t oy = static_cast<int16_t>(k * kPerpY[i]);
-      gfx.drawLine(x0 + ox, y0 + oy, x1 + ox, y1 + oy, color);
-    }
+    // Each ray is a filled quad, not stacked drawLine strokes. Offsetting a
+    // stroke to thicken it only works on axis-aligned lines: two copies of a
+    // 45° Bresenham line one pixel apart touch at corners only, so the four
+    // diagonal rays came out as dotted chains while the axis rays were solid.
+    // fillTriangle fills solid at any orientation.
+    const int16_t hx = static_cast<int16_t>(-kRaySin[i] * t / 256);
+    const int16_t hy = static_cast<int16_t>(kRayCos[i] * t / 256);
+    gfx.fillTriangle(x0 + hx, y0 + hy, x0 - hx, y0 - hy, x1 - hx, y1 - hy, color);
+    gfx.fillTriangle(x0 + hx, y0 + hy, x1 + hx, y1 + hy, x1 - hx, y1 - hy, color);
   }
 }
 
@@ -300,7 +307,10 @@ void cloudPuff(Arduino_GFX& gfx, int16_t x, int16_t y, int16_t w, uint16_t color
   gfx.fillCircle(x + r, baseY, r, color);
   gfx.fillCircle(x + w - r - 1, baseY, r, color);  // w - r would land one past the right edge
   gfx.fillCircle(x + w / 2, y + crownR, crownR, color);
-  gfx.fillRect(x + r, baseY, w - 2 * r, r, color);
+  // Height r + 1, not r: the shoulder circles reach baseY + r, so a rect of
+  // height r leaves the cloud's bottom row as two narrow nubs with a gap
+  // between them.
+  gfx.fillRect(x + r, baseY, w - 2 * r, r + 1, color);
 }
 ```
 
@@ -318,6 +328,9 @@ Insert before the closing brace of the switch:
 
 ```cpp
     case IconId::WxClear: {
+      // Measured floor: fits at every size >= 21. The naive bound q + 3t <=
+      // size/2 says 28, but overstates the reach — kRayCos/kRaySin are scaled
+      // by 128 rather than 127, so each ray truncates about a pixel short.
       sunDisc(gfx, cx, cy, q, t, color);
       break;
     }
@@ -326,7 +339,15 @@ Insert before the closing brace of the switch:
       // so the centre needs to sit at least q + 2t from the top-left corner.
       // Moved rather than shrunk, or the disc reads as a dot at small sizes.
       sunDisc(gfx, x + q + t * 2, y + q + t * 2, q - t, t, color);
-      cloudPuff(gfx, x + q / 2, cy - q / 4, size - q / 2, color);
+      // cy - q/4 fits with zero bottom margin at 56/64/96 (luck, not a
+      // guarantee) and does overflow at other sizes in this app's range, so
+      // clamp against the same shoulder-circle-bottom bound cloudPuff itself
+      // has to satisfy. At our three sizes the clamp is a no-op.
+      const int16_t cloudW = size - q / 2;
+      const int16_t cloudR = cloudW / 4;
+      const int16_t cloudYMax = y + size - 1 - (2 * cloudR + cloudR / 2);
+      const int16_t cloudY = (cy - q / 4 < cloudYMax) ? (cy - q / 4) : cloudYMax;
+      cloudPuff(gfx, x + q / 2, cloudY, cloudW, color);
       break;
     }
     case IconId::WxCloudy: {
