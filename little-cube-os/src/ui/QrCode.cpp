@@ -28,9 +28,10 @@ namespace {
 // minVersion to 1, so max_qrcode_version is a ceiling, not a target — the
 // encoder still picks the smallest version that fits.
 //
-// ⚠ Device-gate note for Task 10: v16 and v17 both render at exactly
-// kMinModulePx in a 260 px box, so the capacity this raise buys sits entirely
-// in the 2 px regime. Scan a near-cap URL on hardware, not just a short one.
+// ⚠ Device-gate note for Task 10: only the TOP of this raise sits at the
+// module floor. In a 260 px box v11-v15 (byte capacity 272-520) still get
+// 3 px, while v16 and v17 (521-644) render at exactly kMinModulePx. Scan a
+// near-cap URL on hardware, not just a short one.
 constexpr int kMaxVersion = 17;
 
 // Below 2px a module cannot be reliably resolved by a phone camera on this
@@ -62,7 +63,7 @@ constexpr size_t kCacheBufferLen = bufferLenForVersion(kMaxVersion);
 // QR alphanumeric set.
 //
 // This slot does NOT fit everything that can encode. qrcodegen picks the mode
-// itself, and at v17-L alphanumeric holds 938 and numeric 1547 — both past
+// itself, and at v17-L alphanumeric holds 938 and numeric 1548 — both past
 // this cap. draw() therefore refuses to cache text it cannot key whole,
 // rather than storing a truncated key: two different strings sharing a
 // 644-character prefix would otherwise collide and render each other's code,
