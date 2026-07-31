@@ -196,7 +196,7 @@ that session; unchecked items were not exercised.
 - [ ] Serial `video play` while the app is open on the library: adopts to
       the player screen within a tick
 - [x] `video status` reports sane fps/shown/dropped/ring during playback
-- [ ] Volume: the chrome's `-`/`+` buttons and left/right swipes both change
+- [x] Volume: the chrome's `-`/`+` buttons and left/right swipes both change
       level, and `vol NN%` appears in the readout for ~1.5 s
 - [ ] Recording refusal both directions (`video play` during a recording;
       recording start during playback)
