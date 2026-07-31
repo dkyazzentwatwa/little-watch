@@ -175,7 +175,7 @@ void VideoApp::update(uint32_t deltaMs) {
       // once the stop has actually landed (state_ == Idle).
       nextQueued_ = false;
       beginPlayback(0);
-      wasPlaying_ = services_.videoPlayer->playing();
+      wasPlaying_ = player->playing();
       return;
     }
     if (player->completed()) {
@@ -348,21 +348,189 @@ bool VideoApp::handleInput(const InputEvent& event) {
   }
 }
 
-// ---- Player rendering & input: completed in the next task -------------------
+// ---- Player rendering & input --------------------------------------------
 
-void VideoApp::renderPlayer(Arduino_GFX& gfx) { renderChrome(gfx); }
+void VideoApp::renderPlayer(Arduino_GFX& gfx) {
+  // The video image area is owned by VideoPlayer::decodeFrame(); this method
+  // touches ONLY the right-hand strip (the "bottom" once the device is
+  // turned). Never clear the whole screen here — it would fight the decoder.
+  if (!chromeDirty_) {
+    return;
+  }
+  chromeDirty_ = false;
+  const int16_t stripX = DISPLAY_WIDTH - kChromeH;  // 310
+  if (!chromeVisible_) {
+    gfx.fillRect(stripX, 0, kChromeH, DISPLAY_HEIGHT, RGB565_BLACK);
+    services_.display->markDirty();
+    return;
+  }
+  renderChrome(gfx);
+  services_.display->markDirty();
+}
 
-void VideoApp::renderChrome(Arduino_GFX& gfx) { (void)gfx; }
+void VideoApp::renderChrome(Arduino_GFX& gfx) {
+  VideoPlayer* player = services_.videoPlayer;
+  if (chrome_ == nullptr || player == nullptr) {
+    return;
+  }
+  // 1) Draw the chrome in LANDSCAPE into the 448x58 canvas using the normal
+  //    text helpers. Layout left->right: back, prev, play/pause, next, stop,
+  //    then the scrub bar with the time readout above it.
+  Arduino_GFX& c = *chrome_;
+  c.fillScreen(RGB565_BLACK);
+  struct Btn {
+    const char* label;
+    widgets::Rect* rect;
+  };
+  const char* playLabel = player->paused() ? ">" : "||";
+  Btn btns[5] = {{"<-", &backRect_}, {"|<", &prevRect_}, {playLabel, &playRect_},
+                 {">|", &nextRect_}, {"[]", &stopRect_}};
+  int16_t bx = theme::kSafeInset;  // inset from the panel's rounded corner
+  for (auto& b : btns) {
+    const widgets::Rect r = widgets::button(c, bx, 4, 44, kChromeH - 8, b.label);
+    // Store the PORTRAIT-space hit rect now (see the mapping note below).
+    b.rect->x = DISPLAY_WIDTH - kChromeH;
+    b.rect->y = r.x;
+    b.rect->w = kChromeH;
+    b.rect->h = r.w;
+    bx += 44 + 6;
+  }
+  // Scrub bar in the remaining width.
+  const int16_t sx = bx + 4;
+  const int16_t sw = kChromeW - theme::kSafeInset - sx;
+  char pos[16];
+  char dur[16];
+  formatMs(player->positionMs(), pos, sizeof(pos));
+  formatMs(player->durationMs(), dur, sizeof(dur));
+  char times[36];
+  snprintf(times, sizeof(times), "%s / %s", pos, dur);
+  widgets::textCentered(c, sx, 6, sw, times, widgets::TextStyle::Caption, theme::kText);
+  const int16_t barY = kChromeH - 18;
+  c.fillRect(sx, barY, sw, 6, theme::kPanelAlt);
+  if (player->durationMs() > 0) {
+    const int16_t fill = static_cast<int16_t>(
+        static_cast<int64_t>(sw) * player->positionMs() / player->durationMs());
+    c.fillRect(sx, barY, fill, 6, theme::kAccent);
+  }
+  scrubRect_ = {static_cast<int16_t>(DISPLAY_WIDTH - kChromeH), sx, kChromeH, sw};
+
+  // 2) Transpose onto the panel strip. Same handedness as the frames
+  //    (ffmpeg transpose=1, 90 deg CW): dst(x, y) = chrome(y, kChromeH-1-x).
+  //    If chrome text reads upside-down relative to the video on device,
+  //    change the source index to src[x * kChromeW + (kChromeW - 1 - y)].
+  DisplayAdapter* display = services_.display;
+  if (!display->hasCanvas()) {
+    return;  // no framebuffer to transpose into (degraded direct-draw mode)
+  }
+  uint16_t* dst = static_cast<Arduino_Canvas*>(display->canvas())->getFramebuffer();
+  const uint16_t* src = chrome_->getFramebuffer();
+  const int16_t stripX = DISPLAY_WIDTH - kChromeH;
+  for (int16_t y = 0; y < DISPLAY_HEIGHT; y++) {
+    uint16_t* row = dst + y * DISPLAY_WIDTH + stripX;
+    for (int16_t x = 0; x < kChromeH; x++) {
+      row[x] = src[(kChromeH - 1 - x) * kChromeW + y];
+    }
+  }
+}
 
 bool VideoApp::playerInput(const InputEvent& event) {
-  if (event.action == InputAction::Back) {
-    stopAndSavePosition();
-    screen_ = Screen::Library;
-    refreshList();
-    dirty_ = true;
-    return true;
+  VideoPlayer* player = services_.videoPlayer;
+  if (player == nullptr) {
+    return false;
   }
-  return false;
+  // Any interaction (re)shows the chrome and rearms the hide timer.
+  auto poke = [&]() {
+    chromeMs_ = 0;
+    if (!chromeVisible_) {
+      chromeVisible_ = true;
+      chromeDirty_ = true;
+    }
+  };
+  switch (event.action) {
+    case InputAction::Tap:
+      if (!chromeVisible_) {
+        poke();
+        return true;
+      }
+      poke();
+      if (playRect_.contains(event.x, event.y)) {
+        player->setPaused(!player->paused());
+        chromeDirty_ = true;
+        return true;
+      }
+      if (stopRect_.contains(event.x, event.y) || backRect_.contains(event.x, event.y)) {
+        stopAndSavePosition();
+        screen_ = Screen::Library;
+        refreshList();
+        dirty_ = true;
+        return true;
+      }
+      if (nextRect_.contains(event.x, event.y) || prevRect_.contains(event.x, event.y)) {
+        const bool fwd = nextRect_.contains(event.x, event.y);
+        char sib[160];
+        if ((fwd ? services_.video->nextInFolder(pendingPath_, sib, sizeof(sib))
+                 : services_.video->prevInFolder(pendingPath_, sib, sizeof(sib)))) {
+          services_.video->savePosition(player->path(), player->positionMs(),
+                                        player->durationMs());
+          player->requestStop();
+          strncpy(pendingPath_, sib, sizeof(pendingPath_) - 1);
+          pendingPath_[sizeof(pendingPath_) - 1] = '\0';
+          // beginPlayback() once the stop lands: reuse the natural-end path
+          // by waiting for idle in update() — simplest is to poll here:
+          pendingResumeMs_ = 0;
+          // Mark so update()'s idle edge starts the pending sibling.
+          wasPlaying_ = true;
+          nextQueued_ = true;
+        }
+        return true;
+      }
+      if (scrubRect_.contains(event.x, event.y)) {
+        // Portrait y within the scrub rect maps to landscape x = fraction.
+        const int32_t frac = event.y - scrubRect_.y;
+        const uint32_t target = static_cast<uint32_t>(
+            static_cast<int64_t>(player->durationMs()) * frac / scrubRect_.h);
+        player->requestSeek(static_cast<int32_t>(target) -
+                            static_cast<int32_t>(player->positionMs()));
+        return true;
+      }
+      chromeVisible_ = false;  // tap on the picture: hide the chrome
+      chromeDirty_ = true;
+      return true;
+    case InputAction::DoubleTap:
+      poke();
+      player->setPaused(!player->paused());
+      chromeDirty_ = true;
+      return true;
+    // Rotated-90 gesture map (device turned CCW to watch): an in-hand
+    // horizontal swipe arrives as portrait Up/Down = seek; an in-hand
+    // vertical swipe arrives as portrait Left/Right = volume.
+    case InputAction::SwipeDown:
+      poke();
+      player->requestSeek(kSeekStepMs);
+      return true;
+    case InputAction::SwipeUp:
+      poke();
+      player->requestSeek(-kSeekStepMs);
+      return true;
+    case InputAction::SwipeRight:
+      poke();
+      services_.audio->setVolumePercent(
+          services_.audio->volumePercent() >= 90 ? 100 : services_.audio->volumePercent() + 10);
+      return true;
+    case InputAction::SwipeLeft:
+      poke();
+      services_.audio->setVolumePercent(
+          services_.audio->volumePercent() <= 10 ? 0 : services_.audio->volumePercent() - 10);
+      return true;
+    case InputAction::Back:
+      stopAndSavePosition();
+      screen_ = Screen::Library;
+      refreshList();
+      dirty_ = true;
+      return true;
+    default:
+      return false;  // Home falls through: the router homes, onPause saves+stops
+  }
 }
 
 #endif  // FEATURE_VIDEO

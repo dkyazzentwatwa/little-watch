@@ -33,7 +33,12 @@ class VideoApp : public App {
  private:
   enum class Screen {
     Library,
-    ConfirmStart,  // battery warning and/or resume offer for pendingPath_
+    // One screen, two modals, driven by three fields set in openItem():
+    //   (battery ok, no resume)   -> screen skipped, plays immediately
+    //   (battery ok, resume)      -> resume modal: confirm=resume, cancel=start over
+    //   (battery low, no resume)  -> battery modal: confirm=play, cancel=library
+    //   (battery low, resume)     -> battery modal, then resume modal on confirm
+    ConfirmStart,
     Player,
   };
 
