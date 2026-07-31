@@ -58,6 +58,18 @@ int16_t ascent(Arduino_GFX& gfx, TextStyle style);
 // instead of each hardcoding a different top margin.
 int16_t header(Arduino_GFX& gfx, const char* title, int16_t shiftX, int16_t shiftY);
 
+// Shared bottom band, the mirror of header(): a hairline rule with left- and
+// optionally right-aligned caption text, inset by kSafeInset so nothing lands
+// in the bezel's corner radius. `right` may be nullptr.
+//
+// TWO BUGS THIS EXISTS TO KILL, both of which every hand-placed footer had:
+//   1. x = kPadding (12) sits INSIDE the rounded corner and gets clipped.
+//   2. Footers are persistent chrome and must drift with the burn-in offsets
+//      (spec §37) — not one of them passed shiftX/shiftY.
+// Returns the y of the rule, i.e. the bottom of the caller's content budget.
+int16_t footer(Arduino_GFX& gfx, const char* left, const char* right, int16_t shiftX,
+               int16_t shiftY);
+
 Rect button(Arduino_GFX& gfx, int16_t x, int16_t y, int16_t w, int16_t h, const char* label,
             bool emphasized = false);
 Rect listItem(Arduino_GFX& gfx, int16_t x, int16_t y, int16_t w, const char* primary,

@@ -142,6 +142,33 @@ int16_t header(Arduino_GFX& gfx, const char* title, int16_t shiftX, int16_t shif
   return ruleY + 12;
 }
 
+int16_t footer(Arduino_GFX& gfx, const char* left, const char* right, int16_t shiftX,
+               int16_t shiftY) {
+  // Rule at -44 rather than the -28 the old call sites used: caption ink then
+  // ends ~19 px above the bottom edge, which clears the corner radius at a
+  // 20 px horizontal inset. -28 did not.
+  const int16_t ruleY = DISPLAY_HEIGHT - 44 + shiftY;
+  const int16_t leftX = theme::kSafeInset + shiftX;
+  const int16_t rightX = DISPLAY_WIDTH - theme::kSafeInset + shiftX;
+  gfx.drawFastHLine(leftX, ruleY, rightX - leftX, theme::kPanelAlt);
+
+  const int16_t textTop = ruleY + 8;
+  int16_t leftW = 0;
+  if (left != nullptr && left[0] != '\0') {
+    leftW = textWidth(gfx, left, TextStyle::Caption);
+    text(gfx, leftX, textTop, left, TextStyle::Caption, theme::kTextDim);
+  }
+  if (right != nullptr && right[0] != '\0') {
+    const int16_t rightW = textWidth(gfx, right, TextStyle::Caption);
+    // Drop the hint rather than let it collide: a half-drawn hint reads as a
+    // rendering fault, an absent one reads as nothing at all.
+    if (leftX + leftW + 12 <= rightX - rightW) {
+      textRight(gfx, rightX, textTop, right, TextStyle::Caption, theme::kPanelAlt);
+    }
+  }
+  return ruleY;
+}
+
 Rect button(Arduino_GFX& gfx, int16_t x, int16_t y, int16_t w, int16_t h, const char* label,
             bool emphasized) {
   const uint16_t fill = emphasized ? theme::kAccent : theme::kPanel;
