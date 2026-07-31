@@ -118,7 +118,7 @@ export LITTLECUBE_PORT="/dev/cu.usbmodem101"
 | `little-cube-os/src/ui/Icons.{h,cpp}` | **Modify** — 7 weather glyphs + `forCondition()` | 2 |
 | `little-cube-os/src/ui/QrCode.{h,cpp}` | **Create** — sole include site for the core's bundled QR encoder | 3 |
 | `little-cube-os/src/services/SettingsService.{h,cpp}` | **Modify** — persisted `clockFace` | 4 |
-| `little-cube-os/src/apps/ClockFaces.{h,cpp}` | **Create** — six face renderers, no app state | 5, 6 |
+| `little-cube-os/src/ui/ClockFaces.{h,cpp}` | **Create** — `FaceId`+`kFaceCount` in Task 4 (shared with SettingsService, like `ui/Theme.h`); six renderers in 5-6 | 4, 5, 6 |
 | `little-cube-os/src/apps/ClockApp.{h,cpp}` | **Modify** — selection, persistence, animation clock | 5, 6 |
 | `little-cube-os/src/apps/WeatherApp.{h,cpp}` | **Modify** — three views, glyphs, refresh reassignment | 7 |
 | `little-cube-os/src/apps/TodayApp.{h,cpp}` | **Modify** — cards, glyph, battery row, delete dead rows | 8 |
@@ -641,7 +641,7 @@ clamp-on-load, same NVS namespace.
 Beside `themeIndex()`:
 
 ```cpp
-  // Selected clock face (0..clockfaces::kFaceCount-1); see apps/ClockFaces.h.
+  // Selected clock face (0..clockfaces::kFaceCount-1); see ui/ClockFaces.h.
   // Stored as a plain uint8 rather than the enum so this header does not have
   // to depend on an app header.
   uint8_t clockFace() const { return clockFace_; }
@@ -676,7 +676,7 @@ constexpr const char* kKeyClockFace = "clockface";
 `SettingsService.cpp`, so the service does not include an app header:
 
 ```cpp
-// Mirrors clockfaces::kFaceCount (apps/ClockFaces.h). Duplicated rather than
+// Mirrors clockfaces::kFaceCount (ui/ClockFaces.h). Duplicated rather than
 // included so a service does not depend on an app; the static_assert in
 // ClockFaces.h is what keeps the two honest.
 constexpr uint8_t kClockFaceCount = 6;
@@ -714,12 +714,30 @@ git commit -m "Settings: persist the selected clock face"
 ## Task 5: Clock faces — structure and the three static faces
 
 **Files:**
-- Create: `little-cube-os/src/apps/ClockFaces.h`
-- Create: `little-cube-os/src/apps/ClockFaces.cpp`
+- Modify: `little-cube-os/src/ui/ClockFaces.h` (created in Task 4 with the enum + count)
+- Create: `little-cube-os/src/ui/ClockFaces.cpp`
 - Modify: `little-cube-os/src/apps/ClockApp.h`
 - Modify: `little-cube-os/src/apps/ClockApp.cpp`
 
-- [ ] **Step 1: Create `little-cube-os/src/apps/ClockFaces.h`**
+⚠️ **`ClockFaces.h` lives in `ui/`, not `apps/`, and there is no duplicated
+count.** An earlier draft of this plan put the header under `apps/` and had
+`SettingsService.cpp` keep its own `kClockFaceCount = 6`, guarded by a
+`static_assert`. Task 4's review killed both ideas:
+
+- The template being cloned **does not duplicate anything**.
+  `SettingsService.cpp` includes `../ui/Theme.h` and reads `theme::kThemeCount`
+  directly. The layering problem is solved by putting the constant where both
+  layers can see it, not by copying it.
+- `static_assert(kFaceCount == 6, ...)` compares a literal against itself. It
+  cannot see a constant in an anonymous namespace in another translation unit,
+  so it catches one drift mode of three — and misses the dangerous one, where
+  settings is bumped to 7 against six faces and dispatches out of bounds.
+
+Task 4 therefore already created `little-cube-os/src/ui/ClockFaces.h` holding
+`FaceId` and `kFaceCount`. **This task extends that file; it does not create
+it, and nothing goes under `ui/ClockFaces.h`.**
+
+- [ ] **Step 1: Extend `little-cube-os/src/ui/ClockFaces.h`**
 
 ```cpp
 #pragma once
@@ -744,9 +762,9 @@ enum class FaceId : uint8_t {
 };
 constexpr uint8_t kFaceCount = 6;
 
-// SettingsService duplicates this count to avoid depending on an app header.
-// If this ever grows, that constant must grow with it.
-static_assert(kFaceCount == 6, "keep kClockFaceCount in SettingsService.cpp in sync");
+// SettingsService reads kFaceCount directly from this header — the same way
+// it reads theme::kThemeCount from ui/Theme.h — so there is no duplicated
+// constant to keep in sync.
 
 const char* name(FaceId id);
 
@@ -769,10 +787,10 @@ bool render(Arduino_GFX& gfx, FaceId id, const FaceContext& ctx);
 }  // namespace clockfaces
 ```
 
-- [ ] **Step 2: Create `little-cube-os/src/apps/ClockFaces.cpp` with the shared parts and the three static faces**
+- [ ] **Step 2: Create `little-cube-os/src/ui/ClockFaces.cpp` with the shared parts and the three static faces**
 
 ```cpp
-#include "ClockFaces.h"
+#include "../ui/ClockFaces.h"
 
 #include <Arduino_GFX_Library.h>
 #include <string.h>
@@ -920,7 +938,7 @@ bool render(Arduino_GFX& gfx, FaceId id, const FaceContext& ctx) {
 #include "../core/App.h"
 #include "../core/Services.h"
 #include "../ui/StatusBar.h"
-#include "ClockFaces.h"
+#include "../ui/ClockFaces.h"
 
 // Clock (spec §12): a big readable time in one of several selectable faces.
 // Tap cycles faces; the choice persists in NVS. Alarms, timers and stopwatch
@@ -1064,7 +1082,7 @@ Expected: clean.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add little-cube-os/src/apps/ClockFaces.h little-cube-os/src/apps/ClockFaces.cpp \
+git add little-cube-os/src/ui/ClockFaces.h little-cube-os/src/ui/ClockFaces.cpp \
         little-cube-os/src/apps/ClockApp.h little-cube-os/src/apps/ClockApp.cpp
 git commit -m "Clock: face abstraction plus digital, stacked and word faces"
 ```
@@ -1079,7 +1097,7 @@ clipped at the bottom-left.
 ## Task 6: The three animated faces
 
 **Files:**
-- Modify: `little-cube-os/src/apps/ClockFaces.cpp` (helpers, three renderers, dispatch)
+- Modify: `little-cube-os/src/ui/ClockFaces.cpp` (helpers, three renderers, dispatch)
 
 - [ ] **Step 1: Add the animation helpers to the anonymous namespace in `ClockFaces.cpp`**
 
@@ -1300,7 +1318,7 @@ substitute `fillCircle` scaled on the minor axis rather than adding a library.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add little-cube-os/src/apps/ClockFaces.cpp
+git add little-cube-os/src/ui/ClockFaces.cpp
 git commit -m "Clock: Blinky, Big Eyes and Mood Cube animated faces"
 ```
 
