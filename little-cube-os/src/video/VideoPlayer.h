@@ -50,6 +50,10 @@ class VideoPlayer {
   bool paused() const { return paused_; }
   bool playing() const { return state_ != State::Idle; }
   bool idle() const { return state_ == State::Idle; }
+  // True while a requested stop/seek is unwinding: the reader task is still
+  // exiting, so playing() holds but this playback is already condemned.
+  // Adoption logic uses this to never adopt a dying playback.
+  bool stopping() const { return state_ == State::Stopping; }
   // True when the last playback reached the end of the file on its own.
   // Valid on the playing->idle edge; a requested stop clears it.
   bool completed() const { return completed_; }

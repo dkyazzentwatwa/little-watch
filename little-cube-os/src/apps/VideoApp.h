@@ -94,10 +94,6 @@ class VideoApp : public App {
   uint32_t saveMs_ = 0;
   uint32_t posShownS_ = 0xFFFFFFFF;  // last second drawn, to redraw chrome 1 Hz
   bool wasPlaying_ = false;
-  // True between a stop WE initiated and the player actually reaching idle.
-  // Gates adoption: a dying playback (Stopping still reports playing()) must
-  // not be adopted, and external playback must be.
-  bool expectIdle_ = false;
   // Set when the prev/next chrome button queues a sibling episode; consumed
   // by update()'s playing->idle edge (Task 10) to start it without waiting
   // for a natural end. Declared now so Task 10 only touches the .cpp.

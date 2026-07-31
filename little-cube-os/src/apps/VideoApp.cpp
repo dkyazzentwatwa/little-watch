@@ -51,7 +51,6 @@ void VideoApp::stopAndSavePosition() {
                                   player->durationMs());
     player->setUiActive(false);
     player->requestStop();
-    expectIdle_ = true;
   }
 }
 
@@ -59,10 +58,17 @@ void VideoApp::stopAndSavePosition() {
 // adopted by landing directly on the player screen. Called from onOpen and
 // from update()'s Library idle path — the latter covers `video play` while
 // this app is already foreground, where router->open() no-ops.
+//
+// The gate is stateless — player state, not an app-side flag — so it
+// survives this app being backgrounded (onPause stops playback but doesn't
+// tick update(), which is exactly how an app-side "expect idle" flag used
+// to go stale and permanently block later adoption). playing() && !stopping()
+// is the live condition on every call, always fresh: Playing means adopt,
+// Stopping means a dying playback that must never flash onto the screen.
 void VideoApp::adoptExternalPlayback() {
   VideoPlayer* player = services_.videoPlayer;
-  if (player == nullptr || !player->playing() || expectIdle_) {
-    return;
+  if (player == nullptr || !player->playing() || player->stopping()) {
+    return;  // nothing to adopt, or the playback is already condemned
   }
   // pendingPath_ must track the live file so prev/next and auto-advance
   // work from here.
@@ -167,10 +173,7 @@ void VideoApp::beginPlayback(uint32_t startMs) {
 
 void VideoApp::update(uint32_t deltaMs) {
   VideoPlayer* player = services_.videoPlayer;
-  if (expectIdle_ && (player == nullptr || player->idle())) {
-    expectIdle_ = false;  // our stop has fully resolved
-  }
-  if (screen_ == Screen::Library && !expectIdle_) {
+  if (screen_ == Screen::Library) {
     adoptExternalPlayback();  // serial play while we were already open
   }
   if (screen_ != Screen::Player || player == nullptr) {
