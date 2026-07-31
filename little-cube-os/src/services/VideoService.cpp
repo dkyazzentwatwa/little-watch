@@ -193,7 +193,12 @@ bool VideoService::sibling(const char* currentPath, bool forward, char* outPath,
     }
     return false;
   }
-  char best[65] = "";
+  // Sized to the path budget, not the display-name budget: this buffer
+  // becomes part of a real SD path via outPath, so truncating it would
+  // build a file that does not exist. 127 chars covers any leaf that can
+  // fit "<dir>/<leaf>" inside the 160-byte path convention anyway; longer
+  // names fail at open with a specific reason rather than silently here.
+  char best[128] = "";
   for (fs::File entry = d.openNextFile(); entry; entry = d.openNextFile()) {
     if (!entry.isDirectory() && isLcvName(entry.name())) {
       const char* name = entry.name();
