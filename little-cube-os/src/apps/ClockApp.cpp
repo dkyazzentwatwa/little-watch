@@ -2,7 +2,6 @@
 
 #include <Arduino_GFX_Library.h>
 
-#include "../board_config.h"
 #include "../core/SystemState.h"
 #include "../hardware/DisplayAdapter.h"
 #include "../services/SettingsService.h"
@@ -18,14 +17,14 @@
 
 void ClockApp::onOpen() {
   animMs_ = 0;
-  animating_ = false;
+  nextFrameMs_ = clockfaces::kFaceStatic;
   lastMinute_ = -1;  // forces the first update() to treat the minute as new
   dirty_ = true;
 }
 
 clockfaces::FaceId ClockApp::face() const {
-  // A missing settings service (boot degraded, spec: everything degrades) is
-  // not an error here — the default face is a perfectly good clock.
+  // A missing settings service (boot degraded — everything degrades) is not an
+  // error here: the default face is a perfectly good clock.
   if (services_.settings == nullptr) {
     return clockfaces::FaceId::BigDigital;
   }
@@ -38,20 +37,30 @@ clockfaces::FaceId ClockApp::face() const {
 
 void ClockApp::update(uint32_t deltaMs) {
   animMs_ += deltaMs;
-  if (animating_) {
-    // The face asked for another frame. AmoledProtection::keepAwake() is
-    // deliberately NOT called: an animated face that held the panel awake is
-    // precisely the burn-in case spec §37 exists to prevent, and the user
-    // chose that clock faces respect the screen timeout.
-    dirty_ = true;
-    return;
+
+  // Count down toward the frame the face asked for at its last render.
+  // Saturating, never wrapping: a large deltaMs (a long blocking service tick,
+  // or the first frame after the screen wakes) would otherwise underflow
+  // straight past zero to ~49 days and freeze an animated face solid.
+  if (nextFrameMs_ != clockfaces::kFaceStatic) {
+    nextFrameMs_ = (deltaMs >= nextFrameMs_) ? 0 : nextFrameMs_ - deltaMs;
+    if (nextFrameMs_ == 0) {
+      dirty_ = true;  // a face returning 0 lands here every tick, by design
+    }
   }
 
-  // Static face: repaint only when the displayed minute actually changes.
-  // SystemState::version already ticks on the clock minute and on the 60 s
-  // pixel shift, so this is belt-and-braces rather than the sole trigger.
+  // Minute roll, checked for every face — an animated face still has to show
+  // the right time. lastMinute_ is written HERE and not in render() on purpose:
+  // kernelLoop() skips render() while the screen is off or a flush is pending,
+  // so a render-side write would never advance and this would latch dirty_ on
+  // every tick forever.
+  //
+  // now() && valid(), not now() alone: TimeService::now() succeeds whenever an
+  // RTC is present even when it has never been set ("Even an unset RTC ticks",
+  // TimeService.cpp:161). Without valid(), a never-set device would repaint the
+  // whole canvas once a minute to redraw an unchanging "--:--".
   struct tm t;
-  if (services_.time != nullptr && services_.time->now(t)) {
+  if (services_.time != nullptr && services_.time->now(t) && services_.time->valid()) {
     if (t.tm_min != lastMinute_) {
       lastMinute_ = t.tm_min;
       dirty_ = true;
@@ -95,24 +104,36 @@ void ClockApp::render() {
   ctx.shiftY = shiftY;
 
   const clockfaces::FaceId id = face();
-  // Store the request: update() turns this into per-frame repaints for an
-  // animated face and leaves a static one alone until the minute rolls.
-  animating_ = clockfaces::render(gfx, id, ctx);
+  // Reload the countdown from whatever the face just asked for. update() turns
+  // it into per-frame repaints mid-animation, a timed wake for a face that is
+  // idle between beats, and nothing at all for a static face.
+  //
+  // AmoledProtection::keepAwake() is deliberately NOT called anywhere in this
+  // app: an animated face that held the panel awake is precisely the burn-in
+  // case spec §37 exists to prevent, and the user chose that clock faces
+  // respect the screen timeout.
+  nextFrameMs_ = clockfaces::render(gfx, id, ctx);
 
-  widgets::footer(gfx, "tap: next face", clockfaces::name(id), shiftX, shiftY);
+  // Face name goes left, action hint goes right — footer()'s documented policy
+  // is that `right` wins the space and `left` ellipsizes, and truncating the
+  // hint would be the wrong failure. Measured: hint 106px, widest name
+  // ("Mood Cube") 91px, in a 328px band. Neither truncates.
+  widgets::footer(gfx, clockfaces::name(id), "tap: next face", shiftX, shiftY);
 
   display->markDirty();
 }
 
 bool ClockApp::handleInput(const InputEvent& event) {
   if (event.action == InputAction::Tap) {
-    // The ONLY place setClockFace() may be called: it writes NVS.
+    // The only place in this app that setClockFace() may be called: it writes
+    // NVS. See the class comment.
     if (services_.settings != nullptr) {
       const uint8_t next =
           static_cast<uint8_t>((services_.settings->clockFace() + 1) % clockfaces::kFaceCount);
       services_.settings->setClockFace(next);
     }
     animMs_ = 0;
+    nextFrameMs_ = clockfaces::kFaceStatic;  // the new face sets its own pace
     dirty_ = true;
     return true;
   }

@@ -34,12 +34,24 @@ struct FaceContext {
   int16_t shiftY = 0;
 };
 
-// Draws the face. Returns true when an animation is in flight and the face
-// wants another frame soon; false when it is static until the minute rolls.
+// "Nothing moves until the minute rolls over" — see render() below.
+constexpr uint32_t kFaceStatic = 0xFFFFFFFFu;
+
+// Draws the face. Returns how many milliseconds until it wants its next frame:
+//   0            — redraw as soon as possible (mid-animation)
+//   kFaceStatic  — nothing moves until the minute rolls over
+//   anything else— idle for that long, then redraw
 //
-// This return value is load-bearing: it is what keeps an animated face from
-// pinning the frame loop and the panel at full tilt. ClockApp must honour it
-// rather than redrawing unconditionally.
-bool render(Arduino_GFX& gfx, FaceId id, const FaceContext& ctx);
+// A bool could not express "idle now, wake me in 3.2 s", which is precisely
+// what a blinking face is: ~140 ms of motion every few seconds. Saying
+// "static" between blinks would starve it of the frames the blink needs to
+// start — a static face gets only the ~2 frames/minute the minute roll and the
+// 60 s pixel shift produce. Saying "redraw always" would repaint the whole
+// 322 KB PSRAM canvas and re-flush it over QSPI at 30 fps, ~97% of it
+// redrawing an unchanged image, on the screen users leave open longest.
+//
+// This return value is load-bearing: ClockApp must honour it rather than
+// redrawing unconditionally.
+uint32_t render(Arduino_GFX& gfx, FaceId id, const FaceContext& ctx);
 
 }  // namespace clockfaces

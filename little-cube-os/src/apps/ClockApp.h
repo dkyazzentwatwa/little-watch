@@ -7,9 +7,13 @@
 
 // Clock (spec §12). The app owns selection, persistence and the animation
 // clock; every pixel lives in ui/ClockFaces.cpp. Tapping cycles faces and
-// writes the choice to NVS — which is why setClockFace() is called ONLY from
-// handleInput(). A per-frame caller at 30 fps would be ~108,000 NVS writes an
-// hour and would wear the partition out inside a fortnight.
+// writes the choice to NVS.
+//
+// Within this app, setClockFace() is called ONLY from handleInput() — never
+// from update() or render(). (SettingsCommands.cpp calls it too, legitimately,
+// once per `settings set clockface`.) A per-frame caller at 30 fps would be
+// ~108,000 NVS writes an hour and would wear the partition out inside a
+// fortnight, with no symptom until the flash dies.
 class ClockApp : public App {
  public:
   explicit ClockApp(Services& services) : services_(services) {}
@@ -32,9 +36,11 @@ class ClockApp : public App {
   uint32_t lastStateVersion_ = 0xFFFFFFFF;
 
   // Monotonic ms since the app opened (or since the face last changed), handed
-  // to the face renderers. animating_ is whatever the last render() reported:
-  // a static face leaves it false and the screen only repaints on the minute.
+  // to the face renderers.
   uint32_t animMs_ = 0;
-  bool animating_ = false;
+  // Countdown, in ms, to the frame the last render()'s face asked for.
+  // clockfaces::kFaceStatic means "do not count down at all" — that face only
+  // repaints when the minute rolls.
+  uint32_t nextFrameMs_ = clockfaces::kFaceStatic;
   int lastMinute_ = -1;
 };

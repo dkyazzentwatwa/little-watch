@@ -191,8 +191,9 @@ dirty check rather than teaching all 12 apps a new `invalidate()` hook.
 | Element | Shifts |
 |---|---|
 | Status bar (clock, battery, Wi-Fi, SD, alarm, recording glyphs) | yes — offset applied in `StatusBar::render()` |
-| Clock app big digits `HH:MM` | yes |
-| Clock app date line | yes |
+| Clock app face (all six, whatever is selected) | yes — every element takes `FaceContext::shiftX/shiftY` |
+| Clock app date / "time not set" line | yes |
+| Clock app footer (face name + tap hint) | yes — via `widgets::footer()` |
 | App body content | no |
 
 The status bar is drawn with the shift by Home, Today, Clock, Weather, Notes,
@@ -200,14 +201,26 @@ Recorder, Audio and Settings. Calendar, Contacts, Calculator and Files do not
 render a status bar at all today, so there is nothing persistent to shift in
 them.
 
-**Known gap:** the Clock app's "time not set" warning line is drawn *without*
-the shift offset. It only appears while the clock is invalid, but it is a
-static high-contrast string for as long as that lasts.
+The Clock app's "time not set" line used to be drawn *without* the shift
+offset — a static high-contrast string for as long as the clock stayed
+invalid. It now goes through the same `FaceContext` offsets as everything else
+on the face, so that gap is closed.
+
+Spec §37's request for alternate clock layouts is implemented: `ui/ClockFaces`
+provides six selectable faces, cycled by tapping the Clock screen or via
+`settings set clockface <0-5>`. Three are drawn today (Digital, Stacked,
+Words); Blinky, Big Eyes and Mood Cube are named and selectable but fall back
+to Digital until their renderers land.
+
+Faces report how soon they want their next frame (`clockfaces::render()`
+returns ms, or `kFaceStatic`), which is what stops an animated face from
+repainting the 322 KB canvas at 30 fps just to cover a blink a few seconds
+away. No face calls `keepAwake()` — clock faces respect the screen timeout,
+because a face that held the panel lit indefinitely is the §37 case itself.
 
 App body content is not shifted. The reasoning is that only genuinely
 persistent chrome burns in — but this has not been validated against a
-long-running app such as Clock or Today, and spec §37 also asks for alternate
-clock layouts, which are **not implemented**.
+long-running app such as Clock or Today.
 
 ### Why the clock is dim, not white
 
