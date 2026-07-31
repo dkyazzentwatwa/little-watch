@@ -21,12 +21,19 @@ void reason(char* out, size_t len, const char* msg) {
   }
 }
 
-// File-scope: JPEGDEC's state struct is large (~17 KB) and lives in .bss
-// rather than on any stack. Decode runs on the loop task only.
+// File-scope by necessity, not just size (~17.5 KB, .bss): JPEGDEC's draw
+// callback is a plain function pointer with no user-data slot, so
+// jpegDrawBlock needs a global anchor (jpegTarget) to reach the display.
+// Moving jpegDecoder into VideoPlayer would not remove that need, and there
+// is only ever one VideoPlayer (kernel singleton). Decode runs on the loop
+// task only.
 JPEGDEC jpegDecoder;
 Arduino_GFX* jpegTarget = nullptr;
 
 int jpegDrawBlock(JPEGDRAW* d) {
+  if (jpegTarget == nullptr) {
+    return 0;
+  }
   jpegTarget->draw16bitRGBBitmap(d->x, d->y, d->pPixels, d->iWidth, d->iHeight);
   return 1;
 }
