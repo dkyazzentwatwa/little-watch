@@ -64,7 +64,10 @@ int16_t header(Arduino_GFX& gfx, const char* title, int16_t shiftX, int16_t shif
 // nullptr.
 //
 // TWO BUGS THIS EXISTS TO KILL, both of which every hand-placed footer had:
-//   1. x = kPadding (12) sits INSIDE the rounded corner and gets clipped.
+//   1. Caption text at x = kPadding (12) sits INSIDE the rounded corner at the
+//      bottom of the panel and gets clipped — hence kSafeInset for the text.
+//      The rule itself stays at kPadding: 44px up, it clears the radius, and
+//      matching header() keeps the two hairlines aligned.
 //   2. Footers are persistent chrome and must drift with the burn-in offsets
 //      (spec §37) — not one of them passed shiftX/shiftY.
 // Returns the bottom of the caller's content budget, already padded clear of

@@ -99,30 +99,59 @@ int16_t footer(Arduino_GFX& gfx, const char* left, const char* right, int16_t sh
 int16_t footer(Arduino_GFX& gfx, const char* left, const char* right, int16_t shiftX,
                int16_t shiftY) {
   // Rule at -44 rather than the -28 the old call sites used: caption ink then
-  // ends ~19 px above the bottom edge, which clears the corner radius at a
-  // 20 px horizontal inset. -28 did not.
+  // ends ~19 px above the bottom edge. That is the working assumption for
+  // clearing the corner radius the old -28 footers visibly clipped against —
+  // kSafeInset = 20 is asserted in prose at Theme.h:61, not a measured
+  // hardware constant, so treat this as pending on-device confirmation.
+  //
+  // shiftX/shiftY (burn-in drift, spec §37) apply on top of both insets below
+  // rather than being clamped — clamping would defeat the drift. In the worst
+  // quadrant (shiftX = -2, shiftY = +2) the effective inset is 18px/17px, not
+  // the nominal 20/19 the comments reason about.
   const int16_t ruleY = DISPLAY_HEIGHT - 44 + shiftY;
-  const int16_t leftX = theme::kSafeInset + shiftX;
-  const int16_t rightX = DISPLAY_WIDTH - theme::kSafeInset + shiftX;
-  gfx.drawFastHLine(leftX, ruleY, rightX - leftX, theme::kPanelAlt);
+  // The rule aligns with header()'s rule (kPadding .. width - kPadding) so the
+  // two hairlines share an inset. The caption TEXT sits further in, at
+  // kSafeInset, because it lives only 19px off the bottom edge — inside the
+  // corner-radius zone the rule itself, 44px up, does not reach.
+  const int16_t ruleLeftX = theme::kPadding + shiftX;
+  const int16_t ruleRightX = DISPLAY_WIDTH - theme::kPadding + shiftX;
+  const int16_t textLeftX = theme::kSafeInset + shiftX;
+  const int16_t textRightX = DISPLAY_WIDTH - theme::kSafeInset + shiftX;
+  gfx.drawFastHLine(ruleLeftX, ruleY, ruleRightX - ruleLeftX, theme::kPanelAlt);
 
   const int16_t textTop = ruleY + 8;
   int16_t leftW = 0;
-  if (left != nullptr && left[0] != '\0') {
+  const bool hasLeft = left != nullptr && left[0] != '\0';
+  if (hasLeft) {
     leftW = textWidth(gfx, left, TextStyle::Caption);
-    text(gfx, leftX, textTop, left, TextStyle::Caption, theme::kTextDim);
+    text(gfx, textLeftX, textTop, left, TextStyle::Caption, theme::kTextDim);
   }
   if (right != nullptr && right[0] != '\0') {
     const int16_t rightW = textWidth(gfx, right, TextStyle::Caption);
     // Drop the hint rather than let it collide: a half-drawn hint reads as a
-    // rendering fault, an absent one reads as nothing at all.
-    if (leftX + leftW + 12 <= rightX - rightW) {
-      textRight(gfx, rightX, textTop, right, TextStyle::Caption, theme::kPanelAlt);
+    // rendering fault, an absent one reads as nothing at all. The 12px
+    // separation gap only applies when there is a left string to collide
+    // with — a right-only hint should use the full band.
+    const int16_t leftEdge = hasLeft ? textLeftX + leftW + 12 : textLeftX;
+    if (leftEdge <= textRightX - rightW) {
+      textRight(gfx, textRightX, textTop, right, TextStyle::Caption, theme::kTextDim);
     }
   }
-  return ruleY;
+  return ruleY - 12;
 }
 ```
+
+⚠️ **`theme::kPanelAlt` is a FILL color, never an ink color.** `Theme.h:17`
+documents it as "secondary fill, dividers", and its measured contrast against
+`kBg` is 1.24–1.40:1 across all ten palettes — text drawn in it is invisible on
+every theme. The existing `ClockApp.cpp:86` footer does exactly this, and its
+`"alarms & timers: coming soon"` string does not appear in device photographs
+at all. Use `kTextDim` for quiet text. This applies to every task below.
+
+⚠️ **`footer()` returns the bottom of the content budget, already padded 12 px
+clear of the rule** — the mirror of `header()`, which returns a padded
+content-start. Screens lay content out *down to* the returned value; they must
+not subtract their own extra margin on top of it.
 
 - [ ] **Step 3: Compile gate**
 
@@ -2122,7 +2151,25 @@ Wrap the existing text rendering in a branch:
 
 Add `#include "../ui/QrCode.h"`.
 
-- [ ] **Step 5: Convert both footers**
+- [ ] **Step 5: Lower `kDetailBottom` to clear the new footer rule**
+
+⚠️ Found during Task 1's review. `NewsApp.cpp:24` defines
+`kDetailBottom = DISPLAY_HEIGHT - 36` (= 412). The shared footer's rule now
+sits at 404, so the detail text area currently runs **8 px past it** and body
+text would draw on top of the hairline. Change it to sit clear of the band:
+
+```cpp
+// Footer band starts here. widgets::footer() puts its rule at
+// DISPLAY_HEIGHT - 44 and returns a content budget 12 px above that, so this
+// must not exceed 392.
+constexpr int16_t kDetailBottom = DISPLAY_HEIGHT - 56;
+```
+
+Re-check `detailMaxLines()` after this change — one fewer line may now fit per
+page, and the pagination must be recomputed against the value actually used or
+the last line of each page is silently lost.
+
+- [ ] **Step 6: Convert both footers**
 
 Replace the detail footer (`NewsApp.cpp:392-399`):
 
