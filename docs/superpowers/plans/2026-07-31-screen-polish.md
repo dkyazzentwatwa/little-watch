@@ -153,6 +153,19 @@ clear of the rule** — the mirror of `header()`, which returns a padded
 content-start. Screens lay content out *down to* the returned value; they must
 not subtract their own extra margin on top of it.
 
+⚠️ **`right` wins the space; `left` yields.** `right` carries action hints the
+user needs to operate the screen, so it is drawn whenever it fits the band at
+all. `left` carries status text (filenames, `"3-8 of 24"`) and is ellipsized
+into whatever space remains. Callers in Tasks 7-11 should therefore put the
+*affordance* on the right and the *status* on the left — putting a long
+filename on the right will get it dropped, not shortened.
+
+**Note on the compile gate for Tasks 1-4:** the ESP32 linker garbage-collects
+unreferenced functions, so `footer()`, `fitWithEllipsis()`, `icons::` weather
+glyphs and `qrcode::draw()` contribute **zero** flash until a screen calls
+them. Identical binary sizes across those commits are expected and prove
+nothing about size. The first real size signal arrives in Task 5.
+
 - [ ] **Step 3: Compile gate**
 
 Run: `./scripts/build.sh`
@@ -2380,6 +2393,18 @@ compile ticks nothing:
 - [ ] **Burn-in soak:** footers visibly drift over ~4 minutes on ALL six screens.
       This is the regression check for the shiftX/shiftY fix and cannot be
       verified any other way.
+- [ ] Footer corner clearance: photograph a footer carrying BOTH strings and
+      confirm neither is clipped. The ~19px caption clearance is exact, but
+      "kSafeInset clears the bezel radius" is a working assumption — there is
+      no measured corner-radius constant in the codebase. If the radius turns
+      out smaller than assumed, the text inset can drop toward kPadding and
+      merge with the rule's.
+- [ ] Footer hint legibility on the LOW-CONTRAST palettes specifically: Matrix
+      (kTextDim measures 3.50:1 against kBg) and Mint (3.97:1). The rest of the
+      ten sit at 4.2:1 or better, so these two are where a quiet caption fails
+      first.
+- [ ] A footer whose left string is too long to fit ellipsizes rather than
+      running into the corner, and the right-hand hint still renders
 - [ ] Boots and renders all six screens with no SD card
 - [ ] Boots and renders all six screens with no Wi-Fi
 - [ ] Boots and renders all six screens with the clock unset
