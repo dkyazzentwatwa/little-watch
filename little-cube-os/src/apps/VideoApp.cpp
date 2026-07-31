@@ -223,6 +223,12 @@ void VideoApp::update(uint32_t deltaMs) {
       chromeDirty_ = true;
     }
   }
+  if (volShownMs_ > 0) {
+    volShownMs_ = deltaMs >= volShownMs_ ? 0 : volShownMs_ - deltaMs;
+    if (volShownMs_ == 0) {
+      chromeDirty_ = true;
+    }
+  }
   // Redraw the timeline once per second while visible.
   if (chromeVisible_ && player->playing()) {
     const uint32_t s = player->positionMs() / 1000;
@@ -473,8 +479,12 @@ void VideoApp::renderChrome(Arduino_GFX& gfx) {
     return;
   }
   // 1) Draw the chrome in LANDSCAPE into the 448x58 canvas using the normal
-  //    text helpers. Layout left->right: back, prev, play/pause, next, stop,
-  //    then the scrub bar with the time readout above it.
+  //    text helpers. Layout left->right: back, prev, play/pause, next,
+  //    vol down, vol up, then the scrub bar with the time readout above it.
+  //    Button width dropped 44 -> 40 to make room for the sixth button
+  //    (stop, redundant with back, was removed) while keeping the scrub
+  //    area comfortably over 100 px: bx = 20 + 6*(40+6) = 296, sx = 300,
+  //    sw = 448 - 20 - 300 = 128 px.
   Arduino_GFX& c = *chrome_;
   c.fillScreen(RGB565_BLACK);
   struct Btn {
@@ -482,17 +492,18 @@ void VideoApp::renderChrome(Arduino_GFX& gfx) {
     widgets::Rect* rect;
   };
   const char* playLabel = player->paused() ? ">" : "||";
-  Btn btns[5] = {{"<-", &backRect_}, {"|<", &prevRect_}, {playLabel, &playRect_},
-                 {">|", &nextRect_}, {"[]", &stopRect_}};
+  static constexpr int16_t kBtnW = 40;
+  Btn btns[6] = {{"<-", &backRect_},  {"|<", &prevRect_}, {playLabel, &playRect_},
+                 {">|", &nextRect_}, {"-", &volDownRect_}, {"+", &volUpRect_}};
   int16_t bx = theme::kSafeInset;  // inset from the panel's rounded corner
   for (auto& b : btns) {
-    const widgets::Rect r = widgets::button(c, bx, 4, 44, kChromeH - 8, b.label);
+    const widgets::Rect r = widgets::button(c, bx, 4, kBtnW, kChromeH - 8, b.label);
     // Store the PORTRAIT-space hit rect now (see the mapping note below).
     b.rect->x = DISPLAY_WIDTH - kChromeH;
     b.rect->y = r.x;
     b.rect->w = kChromeH;
     b.rect->h = r.w;
-    bx += 44 + 6;
+    bx += kBtnW + 6;
   }
   // Scrub bar in the remaining width.
   const int16_t sx = bx + 4;
@@ -510,7 +521,13 @@ void VideoApp::renderChrome(Arduino_GFX& gfx) {
     snprintf(batt, sizeof(batt), " · %d%%", services_.state->batteryPercent);
   }
   char times[64];
-  snprintf(times, sizeof(times), "%s / %s%s", pos, dur, batt);
+  if (volShownMs_ > 0) {
+    // Sized for %u's worst case (uint8_t, 3 digits) — well under 64.
+    snprintf(times, sizeof(times), "vol %u%%",
+             static_cast<unsigned>(services_.audio->volumePercent()));
+  } else {
+    snprintf(times, sizeof(times), "%s / %s%s", pos, dur, batt);
+  }
   // Episode title beside the time readout, same row, splitting the scrub
   // area's width rather than reworking the 58px-tall layout: the time text
   // moves from centered to right-aligned, and the title fills whatever's
@@ -583,11 +600,20 @@ bool VideoApp::playerInput(const InputEvent& event) {
         chromeDirty_ = true;
         return true;
       }
-      if (stopRect_.contains(event.x, event.y) || backRect_.contains(event.x, event.y)) {
+      if (backRect_.contains(event.x, event.y)) {
         stopAndSavePosition();
         screen_ = Screen::Library;
         refreshList();
         dirty_ = true;
+        return true;
+      }
+      if (volDownRect_.contains(event.x, event.y) || volUpRect_.contains(event.x, event.y)) {
+        const bool up = volUpRect_.contains(event.x, event.y);
+        const uint8_t cur = services_.audio->volumePercent();
+        services_.audio->setVolumePercent(up ? (cur >= 90 ? 100 : cur + 10)
+                                             : (cur <= 10 ? 0 : cur - 10));
+        volShownMs_ = kVolShowMs;
+        chromeDirty_ = true;
         return true;
       }
       if (nextRect_.contains(event.x, event.y) || prevRect_.contains(event.x, event.y)) {
@@ -641,11 +667,15 @@ bool VideoApp::playerInput(const InputEvent& event) {
       poke();
       services_.audio->setVolumePercent(
           services_.audio->volumePercent() >= 90 ? 100 : services_.audio->volumePercent() + 10);
+      volShownMs_ = kVolShowMs;
+      chromeDirty_ = true;
       return true;
     case InputAction::SwipeLeft:
       poke();
       services_.audio->setVolumePercent(
           services_.audio->volumePercent() <= 10 ? 0 : services_.audio->volumePercent() - 10);
+      volShownMs_ = kVolShowMs;
+      chromeDirty_ = true;
       return true;
     case InputAction::Back:
       stopAndSavePosition();

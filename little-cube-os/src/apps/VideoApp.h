@@ -115,8 +115,14 @@ class VideoApp : public App {
   widgets::Rect prevRect_;
   widgets::Rect playRect_;
   widgets::Rect nextRect_;
-  widgets::Rect stopRect_;
+  widgets::Rect volDownRect_;
+  widgets::Rect volUpRect_;
   widgets::Rect scrubRect_;
+
+  // Volume readout: when > 0, renderChrome() shows "vol NN%" in place of the
+  // normal time/battery readout, counting down to 0 via update().
+  uint32_t volShownMs_ = 0;
+  static constexpr uint32_t kVolShowMs = 1500;
 };
 
 #endif  // FEATURE_VIDEO
