@@ -42,6 +42,7 @@ void VideoApp::onResume() {
 }
 
 void VideoApp::stopAndSavePosition() {
+  nextQueued_ = false;  // an exit abandons any queued prev/next switch
   VideoPlayer* player = services_.videoPlayer;
   if (player != nullptr && player->playing()) {
     services_.video->savePosition(player->path(), player->positionMs(),
@@ -112,6 +113,7 @@ void VideoApp::openItem(size_t index) {
 }
 
 void VideoApp::beginPlayback(uint32_t startMs) {
+  nextQueued_ = false;
   char why[48];
   VideoPlayer* player = services_.videoPlayer;
   if (player == nullptr || !player->play(pendingPath_, startMs, why, sizeof(why))) {
