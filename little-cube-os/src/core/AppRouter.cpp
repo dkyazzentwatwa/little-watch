@@ -19,6 +19,7 @@ const char* appName(AppId id) {
     case AppId::Reader: return "Reader";
     case AppId::News: return "News";
     case AppId::Assistant: return "Assistant";
+    case AppId::Video: return "Video";
   }
   return "?";
 }

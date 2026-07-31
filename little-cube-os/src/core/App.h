@@ -21,9 +21,10 @@ enum class AppId : uint8_t {
   Reader,
   News,
   Assistant,
+  Video,
 };
 
-constexpr uint8_t kAppCount = 15;
+constexpr uint8_t kAppCount = 16;
 
 const char* appName(AppId id);
 

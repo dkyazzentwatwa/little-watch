@@ -145,6 +145,14 @@ void draw(Arduino_GFX& gfx, IconId id, int16_t x, int16_t y, int16_t size, uint1
       }
       break;
     }
+    case IconId::Video: {
+      // A screen with a play triangle.
+      gfx.drawRoundRect(x, y + q / 2, size, size - q, t * 2, color);
+      gfx.drawRoundRect(x + 1, y + q / 2 + 1, size - 2, size - q - 2, t * 2, color);
+      gfx.fillTriangle(x + q + t, cy - q + t, x + q + t, cy + q - t, x + size - q, cy,
+                       color);
+      break;
+    }
     case IconId::Settings: {
       // Gear approximated by a ring, four spokes and a hub — cheaper and
       // cleaner at this size than real teeth.

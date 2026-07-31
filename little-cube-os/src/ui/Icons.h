@@ -25,6 +25,7 @@ enum class IconId : uint8_t {
   Assistant,
   Audio,
   Calendar,
+  Video,
   Settings,
   Tools,
 };

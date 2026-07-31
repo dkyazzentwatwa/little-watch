@@ -28,6 +28,8 @@ class MusicService;
 class NewsService;
 class PodcastService;
 class RadioService;
+class VideoService;
+class VideoPlayer;
 
 class SerialCommandService;
 
@@ -62,6 +64,8 @@ struct Services {
   MusicService* music = nullptr;
   PodcastService* podcasts = nullptr;
   RadioService* radio = nullptr;
+  VideoService* video = nullptr;
+  VideoPlayer* videoPlayer = nullptr;
 
   SerialCommandService* serial = nullptr;
 

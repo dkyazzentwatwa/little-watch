@@ -29,6 +29,10 @@
 #include "../services/TimeService.h"
 #include "../services/WifiService.h"
 #include "../storage/SdStorage.h"
+#if FEATURE_VIDEO
+#include "../services/VideoService.h"
+#include "../video/VideoPlayer.h"
+#endif
 #include "../ui/AmoledProtection.h"
 #include "../ui/Theme.h"
 #include "AppRouter.h"
@@ -62,6 +66,10 @@ BookService bookService;
 MusicService musicService;
 PodcastService podcastService;
 RadioService radioService;
+#if FEATURE_VIDEO
+VideoService videoService;
+VideoPlayer videoPlayer;
+#endif
 
 SerialCommandService serialCommandService;
 
@@ -292,6 +300,10 @@ void wireServices() {
   services.music = &musicService;
   services.podcasts = &podcastService;
   services.radio = &radioService;
+#if FEATURE_VIDEO
+  services.video = &videoService;
+  services.videoPlayer = &videoPlayer;
+#endif
   services.serial = &serialCommandService;
   services.amoled = &amoledProtection;
   services.events = &eventBus;
@@ -367,6 +379,10 @@ void kernelSetup() {
   musicService.begin(&sdStorage);  // music/podcast library scan; pull-only
   podcastService.begin(&sdStorage, &wifiService, &eventBus);  // RSS/download on a task
   radioService.begin(&sdStorage);
+#if FEATURE_VIDEO
+  videoService.begin(&sdStorage);  // pull-only, no update() slot
+  videoPlayer.begin(&audioAdapter, &displayAdapter, &sdStorage);
+#endif
   recorderService.begin(&audioAdapter, &sdCardAdapter, &sdStorage, &eventBus, &systemState);
   assistantService.begin(&audioAdapter, &wifiService, &settingsService, &sdStorage,
                          &sdCardAdapter, &systemState);
@@ -460,6 +476,9 @@ void kernelLoop() {
   // Running the card adapter first would judge teardown against writer state
   // that is a frame stale.
   audioAdapter.update(deltaMs);
+#if FEATURE_VIDEO
+  videoPlayer.update(deltaMs);
+#endif
   recorderService.update(deltaMs);
   assistantService.update(deltaMs);
   updateRecordingQuietCapture();
