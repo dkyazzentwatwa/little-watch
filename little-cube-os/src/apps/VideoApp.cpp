@@ -26,24 +26,7 @@ void VideoApp::onOpen() {
   }
   dirty_ = true;
 
-  // Adopt a playback the serial family started: land directly on the player
-  // instead of the library. pendingPath_ must track the live file so
-  // prev/next and auto-advance work from here.
-  VideoPlayer* player = services_.videoPlayer;
-  if (player != nullptr && player->playing()) {
-    strncpy(pendingPath_, player->path(), sizeof(pendingPath_) - 1);
-    pendingPath_[sizeof(pendingPath_) - 1] = '\0';
-    player->setUiActive(true);
-    screen_ = Screen::Player;
-    chromeVisible_ = true;
-    chromeDirty_ = true;
-    chromeMs_ = 0;
-    saveMs_ = 0;
-    wasPlaying_ = true;
-    // The decoder only writes the centered band; blank the margins once.
-    services_.display->canvas()->fillScreen(RGB565_BLACK);
-    services_.display->markDirty();
-  }
+  adoptExternalPlayback();
 }
 
 void VideoApp::onClose() {
@@ -68,7 +51,33 @@ void VideoApp::stopAndSavePosition() {
                                   player->durationMs());
     player->setUiActive(false);
     player->requestStop();
+    expectIdle_ = true;
   }
+}
+
+// A playback this app did not start (the serial family's `video play`) is
+// adopted by landing directly on the player screen. Called from onOpen and
+// from update()'s Library idle path — the latter covers `video play` while
+// this app is already foreground, where router->open() no-ops.
+void VideoApp::adoptExternalPlayback() {
+  VideoPlayer* player = services_.videoPlayer;
+  if (player == nullptr || !player->playing() || expectIdle_) {
+    return;
+  }
+  // pendingPath_ must track the live file so prev/next and auto-advance
+  // work from here.
+  strncpy(pendingPath_, player->path(), sizeof(pendingPath_) - 1);
+  pendingPath_[sizeof(pendingPath_) - 1] = '\0';
+  player->setUiActive(true);
+  screen_ = Screen::Player;
+  chromeVisible_ = true;
+  chromeDirty_ = true;
+  chromeMs_ = 0;
+  saveMs_ = 0;
+  wasPlaying_ = true;
+  // The decoder only writes the centered band; blank the margins once.
+  services_.display->canvas()->fillScreen(RGB565_BLACK);
+  services_.display->markDirty();
 }
 
 void VideoApp::refreshList() {
@@ -158,6 +167,12 @@ void VideoApp::beginPlayback(uint32_t startMs) {
 
 void VideoApp::update(uint32_t deltaMs) {
   VideoPlayer* player = services_.videoPlayer;
+  if (expectIdle_ && (player == nullptr || player->idle())) {
+    expectIdle_ = false;  // our stop has fully resolved
+  }
+  if (screen_ == Screen::Library && !expectIdle_) {
+    adoptExternalPlayback();  // serial play while we were already open
+  }
   if (screen_ != Screen::Player || player == nullptr) {
     return;
   }

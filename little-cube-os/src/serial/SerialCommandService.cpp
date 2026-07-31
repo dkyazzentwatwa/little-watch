@@ -468,9 +468,10 @@ void SerialCommandService::handleLine(char* line) {
   }
 #if FEATURE_VIDEO
   if (strcmp(family, "video") == 0) {
-    if (verb == nullptr || !handleVideoCommand(*services_, verb, cursor)) {
-      Serial.printf("error: unknown command 'video %s' — try 'help video'\n",
-                    verb != nullptr ? verb : "");
+    if (verb == nullptr) {
+      printVideoHelp();
+    } else if (!handleVideoCommand(*services_, verb, cursor)) {
+      Serial.printf("error: unknown command 'video %s' — try 'help video'\n", verb);
     }
     return;
   }
