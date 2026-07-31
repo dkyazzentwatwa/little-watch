@@ -33,15 +33,6 @@ void strokeRect(Arduino_GFX& gfx, int16_t x, int16_t y, int16_t w, int16_t h, in
 constexpr int8_t kRayCos[8] = {127, 90, 0, -90, -127, -90, 0, 90};
 constexpr int8_t kRaySin[8] = {0, 90, 127, 90, 0, -90, -127, -90};
 
-// Unit perpendicular step for each ray direction (a 90-degree rotation of
-// kRayCos/kRaySin, sign only). The /128 tables above truncate to 0 for the
-// diagonal rays at small thicknesses, so thickening needs its own table
-// rather than reusing them.
-constexpr int8_t kPerpX[8] = {0, -1, -1, -1, 0, 1, 1, 1};
-constexpr int8_t kPerpY[8] = {1, 1, 0, -1, -1, -1, 0, 1};
-
-// Needs size >= 28: below that stroke()'s t clamps to 2 and q + 3t exceeds
-// size/2, pushing rays past the box. Irrelevant at the sizes this app uses.
 void sunDisc(Arduino_GFX& gfx, int16_t cx, int16_t cy, int16_t r, int16_t t,
              uint16_t color) {
   gfx.fillCircle(cx, cy, r, color);
@@ -52,15 +43,17 @@ void sunDisc(Arduino_GFX& gfx, int16_t cx, int16_t cy, int16_t r, int16_t t,
     const int16_t y0 = cy + static_cast<int16_t>(inner * kRaySin[i] / 128);
     const int16_t x1 = cx + static_cast<int16_t>(outer * kRayCos[i] / 128);
     const int16_t y1 = cy + static_cast<int16_t>(outer * kRaySin[i] / 128);
-    // Thicken perpendicular to the ray, not along x: an x-only offset draws
-    // duplicate scanlines on horizontal rays and under-thickens diagonals.
-    // Centre the offset so the ray sits on its true radial line.
-    for (int16_t o = 0; o < t; o++) {
-      const int16_t k = o - t / 2;
-      const int16_t ox = static_cast<int16_t>(k * kPerpX[i]);
-      const int16_t oy = static_cast<int16_t>(k * kPerpY[i]);
-      gfx.drawLine(x0 + ox, y0 + oy, x1 + ox, y1 + oy, color);
-    }
+    // Each ray is a filled quad (two triangles) spanning t px perpendicular
+    // to its own direction. A drawLine-per-offset loop was tried here and
+    // rejected: offsetting along x only misses diagonal rays entirely
+    // (Bresenham steps that touch only at corners render as a dotted
+    // chain, not a solid band), and a perpendicular *line* offset still
+    // hits the same problem once the perpendicular has magnitude sqrt(2).
+    // A filled triangle has no such gap at any angle.
+    const int16_t hx = static_cast<int16_t>(-kRaySin[i] * t / 256);
+    const int16_t hy = static_cast<int16_t>(kRayCos[i] * t / 256);
+    gfx.fillTriangle(x0 + hx, y0 + hy, x0 - hx, y0 - hy, x1 - hx, y1 - hy, color);
+    gfx.fillTriangle(x0 + hx, y0 + hy, x1 + hx, y1 + hy, x1 - hx, y1 - hy, color);
   }
 }
 
@@ -79,7 +72,10 @@ void cloudPuff(Arduino_GFX& gfx, int16_t x, int16_t y, int16_t w, uint16_t color
   gfx.fillCircle(x + r, baseY, r, color);
   gfx.fillCircle(x + w - r - 1, baseY, r, color);  // w - r would land one past the right edge
   gfx.fillCircle(x + w / 2, y + crownR, crownR, color);
-  gfx.fillRect(x + r, baseY, w - 2 * r, r, color);
+  // Height r + 1, not r: the shoulder circles reach row baseY + r, but a
+  // fillRect of height r only covers rows baseY..baseY+r-1, leaving the
+  // cloud's bottom row as two narrow nubs with a gap between them.
+  gfx.fillRect(x + r, baseY, w - 2 * r, r + 1, color);
 }
 
 struct ConditionEntry {
@@ -251,6 +247,11 @@ void draw(Arduino_GFX& gfx, IconId id, int16_t x, int16_t y, int16_t size, uint1
       break;
     }
     case IconId::WxClear: {
+      // Measured floor: fits down to size 21, not the size 28 that
+      // q + 3t <= size/2 alone would suggest. kRayCos/kRaySin are scaled by
+      // 128 rather than 127, so every ray's reach truncates ~1px short of
+      // its nominal radius, buying back the margin that formula predicts
+      // is missing. Irrelevant at the sizes this app actually uses.
       sunDisc(gfx, cx, cy, q, t, color);
       break;
     }
@@ -259,7 +260,15 @@ void draw(Arduino_GFX& gfx, IconId id, int16_t x, int16_t y, int16_t size, uint1
       // so the centre needs to sit at least q + 2t from the top-left corner.
       // Moved rather than shrunk, or the disc reads as a dot at small sizes.
       sunDisc(gfx, x + q + t * 2, y + q + t * 2, q - t, t, color);
-      cloudPuff(gfx, x + q / 2, cy - q / 4, size - q / 2, color);
+      // cy - q/4 fits with zero bottom margin at 56/64/96 (luck, not a
+      // guarantee) and does overflow at other sizes in this app's range, so
+      // clamp against the same shoulder-circle-bottom bound cloudPuff itself
+      // has to satisfy. At our three sizes the clamp is a no-op.
+      const int16_t cloudW = size - q / 2;
+      const int16_t cloudR = cloudW / 4;
+      const int16_t cloudYMax = y + size - 1 - (2 * cloudR + cloudR / 2);
+      const int16_t cloudY = (cy - q / 4 < cloudYMax) ? (cy - q / 4) : cloudYMax;
+      cloudPuff(gfx, x + q / 2, cloudY, cloudW, color);
       break;
     }
     case IconId::WxCloudy: {
