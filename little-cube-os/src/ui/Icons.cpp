@@ -28,8 +28,9 @@ void strokeRect(Arduino_GFX& gfx, int16_t x, int16_t y, int16_t w, int16_t h, in
   }
 }
 
-// cos/sin scaled by 128 for the 8 compass directions. A table keeps the sun's
-// rays symmetric and integer-only — no float trig in a render path.
+// cos/sin scaled to 127 for the 8 compass directions, divided back down by
+// 128 wherever they're used. A table keeps the sun's rays symmetric and
+// integer-only — no float trig in a render path.
 constexpr int8_t kRayCos[8] = {127, 90, 0, -90, -127, -90, 0, 90};
 constexpr int8_t kRaySin[8] = {0, 90, 127, 90, 0, -90, -127, -90};
 
@@ -43,15 +44,33 @@ void sunDisc(Arduino_GFX& gfx, int16_t cx, int16_t cy, int16_t r, int16_t t,
     const int16_t y0 = cy + static_cast<int16_t>(inner * kRaySin[i] / 128);
     const int16_t x1 = cx + static_cast<int16_t>(outer * kRayCos[i] / 128);
     const int16_t y1 = cy + static_cast<int16_t>(outer * kRaySin[i] / 128);
-    // Each ray is a filled quad (two triangles) spanning t px perpendicular
-    // to its own direction. A drawLine-per-offset loop was tried here and
+    // Each ray is a filled quad (two triangles) spanning perpendicular to
+    // its own direction. A drawLine-per-offset loop was tried here and
     // rejected: offsetting along x only misses diagonal rays entirely
     // (Bresenham steps that touch only at corners render as a dotted
     // chain, not a solid band), and a perpendicular *line* offset still
     // hits the same problem once the perpendicular has magnitude sqrt(2).
     // A filled triangle has no such gap at any angle.
-    const int16_t hx = static_cast<int16_t>(-kRaySin[i] * t / 256);
-    const int16_t hy = static_cast<int16_t>(kRayCos[i] * t / 256);
+    //
+    // The rendered band is 2*floor(127t/256) + 1 px, not t: t for odd t,
+    // t-1 for even (56 and 64 render identical ray thickness despite t
+    // going 3->4). Rounding half-up instead overshoots to t+1, which is
+    // worse, so this is left alone rather than "fixed".
+    //
+    // Diagonal rays render 15-25% heavier than the axis rays (axis offset
+    // is exact, diagonal offset is the same integer stepped along a
+    // sqrt(2)-longer perpendicular). Stepping the diagonal offset down one
+    // integer makes them ~24% *too thin* instead — the error is symmetric
+    // and not fixable without subpixel coverage. Leave it.
+    int16_t hx = static_cast<int16_t>(-kRaySin[i] * t / 256);
+    int16_t hy = static_cast<int16_t>(kRayCos[i] * t / 256);
+    if (hx == 0 && hy == 0) {
+      // t == 2 (sizes 21-47): both offsets truncate to 0 and the quad
+      // collapses to a zero-area line. Force a +-1 perpendicular step so
+      // the ray stays a filled shape instead of vanishing.
+      hx = static_cast<int16_t>(kRaySin[i] > 0 ? -1 : (kRaySin[i] < 0 ? 1 : 0));
+      hy = static_cast<int16_t>(kRayCos[i] > 0 ? 1 : (kRayCos[i] < 0 ? -1 : 0));
+    }
     gfx.fillTriangle(x0 + hx, y0 + hy, x0 - hx, y0 - hy, x1 - hx, y1 - hy, color);
     gfx.fillTriangle(x0 + hx, y0 + hy, x1 + hx, y1 + hy, x1 - hx, y1 - hy, color);
   }
@@ -248,10 +267,11 @@ void draw(Arduino_GFX& gfx, IconId id, int16_t x, int16_t y, int16_t size, uint1
     }
     case IconId::WxClear: {
       // Measured floor: fits down to size 21, not the size 28 that
-      // q + 3t <= size/2 alone would suggest. kRayCos/kRaySin are scaled by
-      // 128 rather than 127, so every ray's reach truncates ~1px short of
-      // its nominal radius, buying back the margin that formula predicts
-      // is missing. Irrelevant at the sizes this app actually uses.
+      // q + 3t <= size/2 alone would suggest. kRayCos/kRaySin hold 127, one
+      // short of the /128 divisor they're used with, so every ray's reach
+      // truncates ~1px short of its nominal radius, buying back the margin
+      // that formula predicts is missing. Irrelevant at the sizes this app
+      // actually uses.
       sunDisc(gfx, cx, cy, q, t, color);
       break;
     }
@@ -263,7 +283,10 @@ void draw(Arduino_GFX& gfx, IconId id, int16_t x, int16_t y, int16_t size, uint1
       // cy - q/4 fits with zero bottom margin at 56/64/96 (luck, not a
       // guarantee) and does overflow at other sizes in this app's range, so
       // clamp against the same shoulder-circle-bottom bound cloudPuff itself
-      // has to satisfy. At our three sizes the clamp is a no-op.
+      // has to satisfy. At our three sizes cy - q/4 and cloudYMax are
+      // exactly equal, so the ternary is inert only by coincidence — any
+      // future change to q, stroke() or cloudW can flip it to actively
+      // clamping and visibly move the cloud.
       const int16_t cloudW = size - q / 2;
       const int16_t cloudR = cloudW / 4;
       const int16_t cloudYMax = y + size - 1 - (2 * cloudR + cloudR / 2);
