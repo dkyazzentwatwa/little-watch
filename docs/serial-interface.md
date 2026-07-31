@@ -210,6 +210,24 @@ What the firmware guarantees, and what it does not:
   cancelled, buffers are wiped, and the console prints
   `password entry cancelled`.
 
+### video
+
+Playback of `.lcv` episodes from `/littlecube/video` (format:
+`docs/lcv-format.md`; produced by `scripts/pack-video.sh`).
+
+| Command | Effect |
+|---|---|
+| `video list [dir]` | list the library root or a season subfolder |
+| `video play <path.lcv>` | plays; relative paths resolve under `/littlecube/video`; resumes any saved position; opens the Video app, which lands on the player screen |
+| `video pause` / `video resume` | pause / resume |
+| `video seek <mm:ss\|+sec\|-sec>` | absolute or relative seek |
+| `video stop` | stop playback (never auto-advances) |
+| `video status` | path, position/duration, fps, frames shown/dropped, ring depth |
+| `video queue` | print the next episode in the current folder |
+
+Video refuses to start while recording is active, and recording refuses
+while video plays (half-duplex audio, one owner at a time).
+
 ## Multiline capture
 
 `notes new`, `notes write <file>` and `notes append <id|path>` switch the

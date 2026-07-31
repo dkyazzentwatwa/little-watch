@@ -4,6 +4,7 @@
 #include "../core/AppRouter.h"
 #include "../core/EventBus.h"
 #include "../core/SystemState.h"
+#include "../feature_flags.h"
 #include "../hardware/InputAdapter.h"
 #include "../hardware/SdCardAdapter.h"
 #include "../services/SettingsService.h"
@@ -21,6 +22,9 @@
 #include "commands/RecordingsCommands.h"
 #include "commands/SettingsCommands.h"
 #include "commands/StorageCommands.h"
+#if FEATURE_VIDEO
+#include "commands/VideoCommands.h"
+#endif
 
 void SerialCommandService::begin(Services* services) {
   services_ = services;
@@ -172,6 +176,12 @@ void SerialCommandService::printHelp(const char* topic) {
       printPodcastHelp();
       return;
     }
+#if FEATURE_VIDEO
+    if (strcmp(topic, "video") == 0) {
+      printVideoHelp();
+      return;
+    }
+#endif
     Serial.printf("no detailed help for '%s' yet\n", topic);
     return;
   }
@@ -192,6 +202,9 @@ void SerialCommandService::printHelp(const char* topic) {
   Serial.println("  WI-FI      scan · connect · status · disconnect · forget · offline");
   Serial.println("  AUDIO      list · play <n> · pause · resume · stop · next · previous");
   Serial.println("  RADIO      list · add · remove · play · pause · resume · stop · status");
+#if FEATURE_VIDEO
+  Serial.println("  VIDEO      list · play <path> · pause · resume · seek · stop · status · queue");
+#endif
   Serial.println("  RECORDINGS list · start · stop · gain · normalize · gate · delete");
   Serial.println("  ASSISTANT  status · key · ask <q> · voice · transcribe · reset");
   Serial.println("  CALENDAR   list · show · next · add · done · delete");
@@ -453,6 +466,15 @@ void SerialCommandService::handleLine(char* line) {
     }
     return;
   }
+#if FEATURE_VIDEO
+  if (strcmp(family, "video") == 0) {
+    if (verb == nullptr || !handleVideoCommand(*services_, verb, cursor)) {
+      Serial.printf("error: unknown command 'video %s' — try 'help video'\n",
+                    verb != nullptr ? verb : "");
+    }
+    return;
+  }
+#endif
 
   Serial.printf("error: unknown command '%s' — try 'help'\n", family);
 }
