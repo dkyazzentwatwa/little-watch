@@ -81,7 +81,7 @@ Layers under `little-cube-os/src/`:
 |---|---|
 | `core/` | Kernel, AppRouter + `App` base, EventBus, `Services`, `SystemState`, `InputAction` |
 | `hardware/` | Adapters: display, input, SD, RTC, battery, `audio/` (ES8311 + I2S) |
-| `services/` | Settings, Wifi, Provisioning, Time, Weather, Notes, Recorder |
+| `services/` | Settings, Wifi, Provisioning, Time, Weather, Notes, Recorder, Music, Podcasts, Radio, News, Video |
 | `storage/` | `SdStorage` (path sanitizing, tree), `AtomicFile`, `StoragePaths` |
 | `serial/` | `SerialCommandService` dispatcher + `commands/` families |
 | `ui/` | `Theme`, `StatusBar`, `Carousel`, `AmoledProtection`, `widgets/` |

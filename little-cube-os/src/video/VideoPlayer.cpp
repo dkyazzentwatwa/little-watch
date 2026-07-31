@@ -228,6 +228,7 @@ bool VideoPlayer::play(const char* path, uint32_t startMs, char* reasonOut, size
   framesShown_ = 0;
   framesDropped_ = 0;
   consecutiveBad_ = 0;
+  lastError_[0] = '\0';  // a fresh play() outruns any stale failure
   state_ = State::Playing;
   return true;
 }
@@ -336,6 +337,7 @@ void VideoPlayer::consumeFrames() {
     } else {
       consecutiveBad_++;
       if (consecutiveBad_ >= kMaxConsecutiveBad) {
+        reason(lastError_, sizeof(lastError_), "too many undecodable frames");
         requestStop();
         return;
       }
@@ -387,6 +389,7 @@ void VideoPlayer::update(uint32_t deltaMs) {
         if (taskFailed_) {
           // Card yanked or file corrupt mid-play: stop now, not completed.
           completed_ = false;
+          reason(lastError_, sizeof(lastError_), "read failed — card removed or file corrupt");
           finishPlayback();
           return;
         }

@@ -58,6 +58,11 @@ class VideoPlayer {
   // Valid on the playing->idle edge; a requested stop clears it.
   bool completed() const { return completed_; }
 
+  // Human-readable cause of an abnormal end (card yank, decode desync).
+  // Valid on the playing->idle edge after an abnormal end; cleared by
+  // play(). Empty for a user/serial stop or a natural completion.
+  const char* lastError() const { return lastError_; }
+
   uint32_t positionMs() const;
   uint32_t durationMs() const { return header_.durationMs; }
   const char* path() const { return path_; }
@@ -130,6 +135,7 @@ class VideoPlayer {
 
   bool paused_ = false;
   bool completed_ = false;
+  char lastError_[48] = "";
   volatile bool uiActive_ = false;
   bool seekPending_ = false;
   uint32_t seekTargetMs_ = 0;

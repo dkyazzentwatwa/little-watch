@@ -150,9 +150,10 @@ off size field                off size field
   off-screen canvas** in normal landscape text orientation with existing Theme
   helpers, then transposed onto the main canvas (~26k px, ~1 ms) — only when
   chrome content changes. No rotated-text renderer.
-- Chrome auto-hides after ~4 s of no input; while visible it offsets by
-  `AmoledProtection::shiftX()/shiftY()` (spec §37 — it is the only static
-  content on screen). Full-motion video itself is inherently burn-in-safe.
+- Chrome auto-hides after ~4 s in every state (playing and paused), bounding
+  static exposure harder than a pixel shift would; the shift-based §37
+  defense applies to the library screen's chrome. Full-motion video itself
+  is inherently burn-in-safe.
 - `VideoApp` remaps input for the rotated frame: swipe axes rotate 90°; tap
   toggles chrome; visible controls (never gesture-only) for play/pause, stop,
   and back per spec §9. The BOOT button keeps its system-wide meaning

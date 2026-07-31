@@ -264,6 +264,13 @@ void VideoApp::update(uint32_t deltaMs) {
       // (state_ is Idle by this tick), so save the last position observed
       // while still playing instead.
       services_.video->savePosition(pendingPath_, lastKnownPosMs_, player->durationMs());
+      if (player->lastError()[0] != '\0') {
+        // Otherwise a mid-stream failure (card yank, decode desync) lands
+        // back on the library with no visible reason at all.
+        strncpy(toast_, player->lastError(), sizeof(toast_) - 1);
+        toast_[sizeof(toast_) - 1] = '\0';
+        toastMs_ = kToastMs;
+      }
     }
     screen_ = Screen::Library;
     refreshList();
@@ -504,7 +511,25 @@ void VideoApp::renderChrome(Arduino_GFX& gfx) {
   }
   char times[64];
   snprintf(times, sizeof(times), "%s / %s%s", pos, dur, batt);
-  widgets::textCentered(c, sx, 6, sw, times, widgets::TextStyle::Caption, theme::kText);
+  // Episode title beside the time readout, same row, splitting the scrub
+  // area's width rather than reworking the 58px-tall layout: the time text
+  // moves from centered to right-aligned, and the title fills whatever's
+  // left, truncated to fit.
+  const int16_t timesW = widgets::textWidth(c, times, widgets::TextStyle::Caption);
+  widgets::textRight(c, sx + sw, 6, times, widgets::TextStyle::Caption, theme::kText);
+  const int16_t titleAreaW = sw - timesW - 8;
+  if (titleAreaW > 10) {
+    const char* leaf = strrchr(pendingPath_, '/');
+    leaf = leaf != nullptr ? leaf + 1 : pendingPath_;
+    char title[48];
+    strncpy(title, leaf, sizeof(title) - 1);
+    title[sizeof(title) - 1] = '\0';
+    while (title[0] != '\0' &&
+           widgets::textWidth(c, title, widgets::TextStyle::Caption) > titleAreaW) {
+      title[strlen(title) - 1] = '\0';
+    }
+    widgets::text(c, sx, 6, title, widgets::TextStyle::Caption, theme::kTextDim);
+  }
   const int16_t barY = kChromeH - 18;
   c.fillRect(sx, barY, sw, 6, theme::kPanelAlt);
   if (player->durationMs() > 0) {
