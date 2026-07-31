@@ -127,6 +127,7 @@ bool VideoPlayer::startTask(uint32_t startFrame) {
   if (startFrame > 0 && !reader_.seekToFrame(startFrame)) {
     return false;
   }
+  xSemaphoreTake(done_, 0);  // drain any stale give, mirroring AudioAdapter's starts
   if (xTaskCreatePinnedToCore(videoReaderTask, "vidread", 6144, this, 3, nullptr, 0) !=
       pdPASS) {
     return false;
@@ -223,18 +224,32 @@ void VideoPlayer::setPaused(bool paused) {
   audio_->pcmPause(paused);
 }
 
+uint32_t VideoPlayer::clockSamples() const {
+  const uint32_t played = audio_->pcmSamplesPlayed();
+  // Once the reader has exited, writePcm no longer advances the counter while
+  // the DMA drains in real time; keeping the correction would freeze target
+  // ~3 frames short of the end and the ring would never drain (EOF hang).
+  const uint32_t dma =
+      taskDone_ ? 0 : (played > kDmaDepthSamples ? kDmaDepthSamples : played);
+  return played - dma;
+}
+
 uint32_t VideoPlayer::positionMs() const {
   if (state_ == State::Idle) {
     return 0;
   }
   const uint64_t baseMs = static_cast<uint64_t>(baseFrame_) * 1000 / header_.fps;
   const uint64_t audioMs =
-      static_cast<uint64_t>(audio_->pcmSamplesPlayed()) * 1000 / header_.audioRateHz;
+      static_cast<uint64_t>(clockSamples()) * 1000 / header_.audioRateHz;
   const uint64_t pos = baseMs + audioMs;
   return pos > header_.durationMs ? header_.durationMs : static_cast<uint32_t>(pos);
 }
 
 void VideoPlayer::finishPlayback() {
+  if (paused_) {
+    paused_ = false;
+    audio_->pcmPause(false);  // never hand the next player a muted codec
+  }
   audio_->endPcmStream();
   reader_.close();
   freeBuffers();
@@ -247,11 +262,9 @@ void VideoPlayer::consumeFrames() {
   }
   // Audio is the master clock; subtract the DMA depth estimate so the frame
   // on screen matches what the speaker is saying, not what was buffered.
-  const uint32_t played = audio_->pcmSamplesPlayed();
-  const uint32_t dma = played > kDmaDepthSamples ? kDmaDepthSamples : played;
   const uint32_t target =
-      baseFrame_ + static_cast<uint32_t>(static_cast<uint64_t>(played - dma) * header_.fps /
-                                         header_.audioRateHz);
+      baseFrame_ + static_cast<uint32_t>(static_cast<uint64_t>(clockSamples()) *
+                                         header_.fps / header_.audioRateHz);
   // Drop everything older than the clock, keeping at least the newest.
   while (static_cast<uint8_t>(head_ - tail_) > 1 &&
          slotFrame_[tail_ % kRingSlots] < target) {
@@ -309,29 +322,38 @@ void VideoPlayer::update(uint32_t deltaMs) {
         finishPlayback();
       }
       return;
-    case State::Stopping:
-      if (taskRunning_ && xSemaphoreTake(done_, 0) == pdTRUE) {
+    case State::Stopping: {
+      if (taskRunning_) {
+        if (xSemaphoreTake(done_, 0) != pdTRUE) {
+          return;  // reader still unwinding; check again next tick
+        }
         taskRunning_ = false;
-        completed_ = false;
-        if (seekPending_) {
-          // Restart at the seek target, new audio-clock epoch.
-          seekPending_ = false;
-          audio_->endPcmStream();
-          uint32_t frame = static_cast<uint32_t>(
-              static_cast<uint64_t>(seekTargetMs_) * header_.fps / 1000);
-          if (frame >= header_.frameCount) {
-            frame = header_.frameCount - 1;
-          }
-          if (audio_->beginPcmStream(header_.audioRateHz, 1) && startTask(frame)) {
-            state_ = State::Playing;
-          } else {
-            finishPlayback();
-          }
+      }
+      // Reader is gone (just reaped, or it had already exited before the
+      // stop/seek request — the post-EOF drain window). Resolve now.
+      completed_ = false;
+      if (seekPending_) {
+        // Restart at the seek target, new audio-clock epoch.
+        seekPending_ = false;
+        audio_->endPcmStream();
+        // Known v1 limitation: up to ~370 ms of pre-seek audio still sits in
+        // the I2S DMA and plays across the splice — ESP_I2S has no flush, and
+        // re-initing the driver here would click. Accepted.
+        uint32_t frame = static_cast<uint32_t>(
+            static_cast<uint64_t>(seekTargetMs_) * header_.fps / 1000);
+        if (frame >= header_.frameCount) {
+          frame = header_.frameCount - 1;
+        }
+        if (audio_->beginPcmStream(header_.audioRateHz, 1) && startTask(frame)) {
+          state_ = State::Playing;
         } else {
           finishPlayback();
         }
+      } else {
+        finishPlayback();
       }
       return;
+    }
   }
 }
 

@@ -31,9 +31,12 @@ class SdStorage;
 // path here must reach endPcmStream().
 class VideoPlayer {
  public:
-  // SPSC ring capacity; public because the reader task (a friend free
-  // function) sizes its wait loop against it.
-  static constexpr uint8_t kRingSlots = 5;
+  // SPSC ring capacity. MUST divide 256: head_/tail_ are free-running uint8
+  // indices, so slot = index % kRingSlots is injective across the uint8 wrap
+  // only when kRingSlots divides 2^8. (5 aliased two live entries every 256
+  // pushes — one clobbered frame per ~17 s.) Public because the reader task
+  // (a friend free function) sizes its wait loop against it.
+  static constexpr uint8_t kRingSlots = 4;
 
   void begin(AudioAdapter* audio, DisplayAdapter* display, SdStorage* storage);
 
@@ -79,6 +82,7 @@ class VideoPlayer {
   bool decodeFrame(uint8_t slot);  // Task 6 fills this in with JPEGDEC
   bool allocBuffers();
   void freeBuffers();
+  uint32_t clockSamples() const;  // audio clock minus the in-flight DMA estimate
 
   static constexpr uint32_t kDmaDepthSamples = 4096;  // I2S depth estimate; tune on device
   static constexpr uint8_t kMaxConsecutiveBad = 15;
