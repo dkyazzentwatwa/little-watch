@@ -14,7 +14,7 @@ class SdStorage;
 // MusicService: no task, no update(deltaMs) slot — VideoApp and the serial
 // family call in, nothing runs from the render path.
 struct VideoInfo {
-  char path[160] = "";
+  char path[160] = "";  // absolute SD path, e.g. /littlecube/video/Show/ep01.lcv
   // 64 chars + NUL. MUST match the sort-key name budget in list() and the
   // page anchors VideoApp builds from this field — a name truncated shorter
   // than the key re-includes its row at a page boundary.
@@ -27,10 +27,18 @@ class VideoService {
  public:
   void begin(SdStorage* storage);
 
-  // Same contract as MusicService::list: sorted case-insensitively with an
-  // exact-bytes tiebreak, keyset paging via `after`, totalOut = the TRUE
-  // count. Directories sort before files ("seasons" one level deep).
-  // Duration is read from each listed file's 64-byte header.
+  // Widest visible window a single list() call can fill.
+  static constexpr size_t kMaxListWindow = 8;
+
+  // Same shape as MusicService::list — sorted case-insensitively with an
+  // exact-bytes tiebreak, totalOut = the TRUE count — with two deviations a
+  // caller must know:
+  //   * `after` is the internal SORT KEY of the previous page's last row
+  //     ('0'/'1' dir/file prefix + up to 64 name chars — build it exactly
+  //     the way makeKey() in the .cpp does), NOT a bare filename.
+  //   * maxItems is clamped to kMaxListWindow.
+  // Directories sort before files ("seasons" one level deep). Duration is
+  // read from each visible file's 64-byte header after the window is final.
   size_t list(const char* dir, VideoInfo* out, size_t maxItems, size_t* totalOut = nullptr,
               const char* after = nullptr);
 

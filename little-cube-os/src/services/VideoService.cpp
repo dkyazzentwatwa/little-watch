@@ -38,6 +38,18 @@ int nameCompare(const char* a, const char* b) {
 
 bool sortsBefore(const char* a, const char* b) { return nameCompare(a, b) < 0; }
 
+// Directories sort before files: prefix the sort key with 0/1. The key
+// buffer mirrors pageAnchors_ usage in VideoApp (`after` uses the same
+// form — see VideoService::list()'s doc comment). Keys carry at most 64
+// name chars (matching VideoInfo::name). Two files identical in their
+// first 64 characters can still misbehave at a page edge — same latent
+// cap MusicService has at 63; accepted.
+void makeKey(bool isDir, const char* name, char* key, size_t keyLen) {
+  key[0] = isDir ? '0' : '1';
+  strncpy(key + 1, name, keyLen - 2);
+  key[keyLen - 1] = '\0';
+}
+
 bool isLcvName(const char* name) {
   if (name == nullptr || name[0] == '.') {
     return false;  // hidden + AppleDouble entries
@@ -54,6 +66,7 @@ bool isLcvName(const char* name) {
 
 bool isDirName(const char* name) { return name != nullptr && name[0] != '.'; }
 
+// Standard CRC-32 (poly 0xEDB88320, reflected), bitwise — keys the resume blob.
 uint32_t crc32Path(const char* s) {
   uint32_t crc = 0xFFFFFFFFu;
   while (*s != '\0') {
@@ -92,23 +105,12 @@ size_t VideoService::list(const char* dir, VideoInfo* out, size_t maxItems, size
     return 0;
   }
 
-  // Directories sort before files: prefix the sort key with 0/1. The key
-  // buffer mirrors pageAnchors_ usage in VideoApp (after uses the same form).
-  // Keys carry at most 64 name chars (matching VideoInfo::name). Two files
-  // identical in their first 64 characters can still misbehave at a page
-  // edge — same latent cap MusicService has at 63; accepted.
-  auto makeKey = [](bool isDir, const char* name, char* key, size_t keyLen) {
-    key[0] = isDir ? '0' : '1';
-    strncpy(key + 1, name, keyLen - 2);
-    key[keyLen - 1] = '\0';
-  };
-
   const bool paged = after != nullptr && after[0] != '\0';
   size_t total = 0;
   size_t count = 0;
-  char keys[8][66];  // sort keys of the visible window; maxItems <= 8
-  if (maxItems > 8) {
-    maxItems = 8;
+  char keys[kMaxListWindow][66];  // sort keys of the visible window
+  if (maxItems > kMaxListWindow) {
+    maxItems = kMaxListWindow;
   }
   for (fs::File entry = d.openNextFile(); entry; entry = d.openNextFile()) {
     const char* name = entry.name();
@@ -193,12 +195,10 @@ bool VideoService::sibling(const char* currentPath, bool forward, char* outPath,
     }
     return false;
   }
-  // Sized to the path budget, not the display-name budget: this buffer
-  // becomes part of a real SD path via outPath, so truncating it would
-  // build a file that does not exist. 127 chars covers any leaf that can
-  // fit "<dir>/<leaf>" inside the 160-byte path convention anyway; longer
-  // names fail at open with a specific reason rather than silently here.
-  char best[128] = "";
+  // Sized to the repo's 160-byte path-buffer convention (VideoInfo::path,
+  // VideoPlayer::path_): this leaf becomes part of a real SD path, so it
+  // must not truncate at the display-name budget.
+  char best[160] = "";
   for (fs::File entry = d.openNextFile(); entry; entry = d.openNextFile()) {
     if (!entry.isDirectory() && isLcvName(entry.name())) {
       const char* name = entry.name();
