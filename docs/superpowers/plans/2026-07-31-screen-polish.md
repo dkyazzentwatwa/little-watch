@@ -793,13 +793,19 @@ struct FaceContext {
   int16_t shiftY = 0;
 };
 
-// Draws the face. Returns true when an animation is in flight and the face
-// wants another frame soon; false when it is static until the minute rolls.
+// Returns how many milliseconds until this face wants its next frame:
+//   0            — redraw as soon as possible (mid-animation)
+//   kFaceStatic  — nothing moves until the minute rolls over
 //
-// This return value is load-bearing: it is what keeps an animated face from
-// pinning the frame loop and the panel at full tilt. ClockApp must honour it
-// rather than redrawing unconditionally.
-bool render(Arduino_GFX& gfx, FaceId id, const FaceContext& ctx);
+// NOT a bool. A bool can only say "static forever" or "redraw every tick",
+// and an animated face here is neither: Blinky and Big Eyes move for ~140 ms
+// every 3.0-6.5 s. Returning false between blinks means the face only gets
+// the ~2 frames/min the minute roll and the pixel shift produce, so the blink
+// never starts; returning true always repaints the whole 322 KB PSRAM canvas
+// and flushes QSPI at 30 fps continuously, ~97% of it redrawing an identical
+// image, on the screen users leave open longest.
+constexpr uint32_t kFaceStatic = 0xFFFFFFFFu;
+uint32_t render(Arduino_GFX& gfx, FaceId id, const FaceContext& ctx);
 
 }  // namespace clockfaces
 ```
@@ -861,7 +867,7 @@ bool renderBigDigital(Arduino_GFX& gfx, const FaceContext& ctx) {
   widgets::textCentered(gfx, ctx.shiftX, DISPLAY_HEIGHT / 2 + 30 + ctx.shiftY, DISPLAY_WIDTH,
                         date, widgets::TextStyle::Caption,
                         ctx.time != nullptr ? theme::kTextDim : theme::kWarn);
-  return false;
+  return kFaceStatic;
 }
 
 bool renderStacked(Arduino_GFX& gfx, const FaceContext& ctx) {
@@ -882,7 +888,7 @@ bool renderStacked(Arduino_GFX& gfx, const FaceContext& ctx) {
   widgets::text(gfx, x, 210 + ctx.shiftY, mm, widgets::TextStyle::Display, theme::kTextDim);
   widgets::text(gfx, x, 330 + ctx.shiftY, date, widgets::TextStyle::Caption,
                 ctx.time != nullptr ? theme::kTextDim : theme::kWarn);
-  return false;
+  return kFaceStatic;
 }
 
 // Minute buckets for the word clock: minute rounded to the nearest five.
@@ -912,8 +918,8 @@ bool renderWord(Arduino_GFX& gfx, const FaceContext& ctx) {
   const int16_t x = theme::kSafeInset + ctx.shiftX;
   const int16_t w = DISPLAY_WIDTH - 2 * theme::kSafeInset;
   widgets::textBlock(gfx, x, 130 + ctx.shiftY, w, phrase, widgets::TextStyle::Title,
-                     ctx.time != nullptr ? theme::kText : theme::kWarn, 4);
-  return false;
+                     ctx.time != nullptr ? theme::kText : theme::kWarn, 3);
+  return kFaceStatic;
 }
 
 }  // namespace
@@ -1161,6 +1167,27 @@ bool eyesClosed(uint32_t animMs) {
   return false;
 }
 
+// Milliseconds until the next blink begins. Walks the same schedule
+// eyesClosed() does, so the two can never disagree about when a blink is due.
+// This is what lets a face sleep between blinks instead of asking for 30 fps
+// to cover 140 ms of motion every few seconds.
+uint32_t msUntilNextBlink(uint32_t animMs) {
+  uint32_t cursor = 0;
+  for (uint32_t i = 0; i < 4096; i++) {
+    const uint32_t gap = kBlinkGapMinMs + (hash32(i) % kBlinkGapSpanMs);
+    if (animMs < cursor + gap) {
+      return (cursor + gap) - animMs;
+    }
+    cursor += gap + kBlinkCloseMs;
+  }
+  return kFaceStatic;
+}
+
+// The pupil drift moves about a pixel every few hundred ms, so it does not
+// need 30 fps either — but it must not be frozen out by the blink schedule.
+// Faces that glance return min(msUntilNextBlink(...), kGlanceStepMs).
+constexpr uint32_t kGlanceStepMs = 120;
+
 // Pupil drift: a slow triangle wave in [-1, 1] scaled to `range` pixels.
 int16_t glanceOffset(uint32_t animMs, uint32_t periodMs, int16_t range) {
   const uint32_t phase = animMs % periodMs;
@@ -1213,7 +1240,15 @@ bool renderBlinky(Arduino_GFX& gfx, const FaceContext& ctx) {
   formatTime(ctx.time, big, sizeof(big));
   widgets::textCentered(gfx, ctx.shiftX, my + 60, DISPLAY_WIDTH, big,
                         widgets::TextStyle::Display, theme::kTextDim);
-  return true;
+  // Ask for the next frame only when something will actually move: every tick
+  // while the eyes are shut, otherwise the sooner of the next blink and the
+  // next pupil step. Returning 0 unconditionally would repaint the whole
+  // canvas at 30 fps to cover ~140 ms of motion every few seconds.
+  if (shut) {
+    return 0u;
+  }
+  const uint32_t toBlink = msUntilNextBlink(ctx.animMs);
+  return toBlink < kGlanceStepMs ? toBlink : kGlanceStepMs;
 }
 
 bool renderBigEyes(Arduino_GFX& gfx, const FaceContext& ctx) {
@@ -1231,7 +1266,15 @@ bool renderBigEyes(Arduino_GFX& gfx, const FaceContext& ctx) {
   formatTime(ctx.time, big, sizeof(big));
   widgets::text(gfx, theme::kSafeInset + ctx.shiftX, theme::kStatusBarHeight + 16 + ctx.shiftY,
                 big, widgets::TextStyle::Caption, theme::kTextDim);
-  return true;
+  // Ask for the next frame only when something will actually move: every tick
+  // while the eyes are shut, otherwise the sooner of the next blink and the
+  // next pupil step. Returning 0 unconditionally would repaint the whole
+  // canvas at 30 fps to cover ~140 ms of motion every few seconds.
+  if (shut) {
+    return 0u;
+  }
+  const uint32_t toBlink = msUntilNextBlink(ctx.animMs);
+  return toBlink < kGlanceStepMs ? toBlink : kGlanceStepMs;
 }
 
 bool renderMoodCube(Arduino_GFX& gfx, const FaceContext& ctx) {
@@ -1314,7 +1357,15 @@ bool renderMoodCube(Arduino_GFX& gfx, const FaceContext& ctx) {
   formatTime(ctx.time, big, sizeof(big));
   widgets::textCentered(gfx, fx, fy + side - 62, side, big, widgets::TextStyle::Title,
                         theme::kTextDim);
-  return true;
+  // Ask for the next frame only when something will actually move: every tick
+  // while the eyes are shut, otherwise the sooner of the next blink and the
+  // next pupil step. Returning 0 unconditionally would repaint the whole
+  // canvas at 30 fps to cover ~140 ms of motion every few seconds.
+  if (shut) {
+    return 0u;
+  }
+  const uint32_t toBlink = msUntilNextBlink(ctx.animMs);
+  return toBlink < kGlanceStepMs ? toBlink : kGlanceStepMs;
 }
 ```
 
