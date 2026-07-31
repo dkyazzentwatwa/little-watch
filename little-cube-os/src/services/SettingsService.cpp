@@ -27,6 +27,7 @@ constexpr const char* kKeyWeatherLat = "wxLat";
 constexpr const char* kKeyWeatherLon = "wxLon";
 constexpr const char* kKeyVolume = "volume";
 constexpr const char* kKeyTheme = "theme";
+constexpr const char* kKeyClockFace = "clockface";
 constexpr const char* kKeyOpenaiKey = "aikey";
 // NVS keys are limited to 15 characters.
 constexpr const char* kKeyMicGain = "micgain";
@@ -45,6 +46,11 @@ constexpr size_t kMaxDeviceNameLen = 32;
 constexpr size_t kMaxTimezoneLen = 48;  // POSIX TZ strings with DST rules run long
 constexpr size_t kMaxCityLen = 64;
 constexpr uint16_t kMinutesPerDay = 24 * 60;
+
+// Mirrors clockfaces::kFaceCount (apps/ClockFaces.h). Duplicated rather than
+// included so a service does not depend on an app; ClockFaces.h carries a
+// static_assert that fails if the two drift.
+constexpr uint8_t kClockFaceCount = 6;
 
 // Takes int, not uint8_t: comparing a uint8_t against MAX_BRIGHTNESS (255)
 // is always false and trips -Wtype-limits.
@@ -138,6 +144,10 @@ void SettingsService::load() {
   if (themeIndex_ >= theme::kThemeCount) {
     themeIndex_ = 0;
   }
+  clockFace_ = prefs.getUChar(kKeyClockFace, 0);
+  if (clockFace_ >= kClockFaceCount) {
+    clockFace_ = 0;
+  }
   bedtimeEnabled_ = prefs.getBool(kKeyBedtimeOn, false);
   bedtimeStartMin_ = clampMinutes(prefs.getUShort(kKeyBedtimeStart, 22 * 60), 22 * 60);
   bedtimeEndMin_ = clampMinutes(prefs.getUShort(kKeyBedtimeEnd, 7 * 60), 7 * 60);
@@ -186,6 +196,14 @@ void SettingsService::setVolumePercent(uint8_t value) {
 void SettingsService::setThemeIndex(uint8_t value) {
   themeIndex_ = value < theme::kThemeCount ? value : 0;
   prefs.putUChar(kKeyTheme, themeIndex_);
+}
+
+// Clamps to 0 (the default face), not to the top of the range: a firmware
+// downgrade that removes faces must land on a known-good default, not on
+// whatever face now happens to occupy the highest surviving index.
+void SettingsService::setClockFace(uint8_t value) {
+  clockFace_ = value < kClockFaceCount ? value : 0;
+  prefs.putUChar(kKeyClockFace, clockFace_);
 }
 
 void SettingsService::setBedtimeEnabled(bool value) {
