@@ -76,6 +76,47 @@ void inkBounds(Arduino_GFX& gfx, const char* s, TextStyle style, int16_t& x1, ui
   restoreFont(gfx);
 }
 
+// Copies s into out, dropping trailing characters and appending an ellipsis
+// until it fits maxW. Captions are short and this runs at most once per frame
+// per string, so a linear measure loop beats carrying a width cache.
+void fitWithEllipsis(Arduino_GFX& gfx, const char* s, int16_t maxW, TextStyle style,
+                     char* out, size_t outLen) {
+  if (out == nullptr || outLen == 0) {
+    return;
+  }
+  out[0] = '\0';
+  if (s == nullptr || s[0] == '\0' || maxW <= 0) {
+    return;
+  }
+  const size_t srcLen = strlen(s);
+  size_t len = srcLen < outLen - 1 ? srcLen : outLen - 1;
+  memcpy(out, s, len);
+  out[len] = '\0';
+  if (textWidth(gfx, out, style) <= maxW) {
+    return;  // fits verbatim, no ellipsis needed
+  }
+
+  // Shave characters off the tail and append "..." until it fits. Cap the
+  // starting length so len + "..." + NUL never exceeds outLen, however small
+  // the caller's buffer is.
+  const size_t maxWithEllipsis = outLen > 4 ? outLen - 4 : 0;  // "..." + NUL
+  if (len > maxWithEllipsis) {
+    len = maxWithEllipsis;
+  }
+  while (len > 0) {
+    out[len] = '\0';
+    strcat(out, "...");  // safe: len + 3 + 1 <= outLen by construction above
+    if (textWidth(gfx, out, style) <= maxW) {
+      return;
+    }
+    len--;
+  }
+  // Nothing fits alongside an ellipsis (maxW too small even for "..."):
+  // leave the field blank rather than draw a fragment that reads as a
+  // rendering fault.
+  out[0] = '\0';
+}
+
 }  // namespace
 
 void text(Arduino_GFX& gfx, int16_t x, int16_t topY, const char* s, TextStyle style,
@@ -166,22 +207,37 @@ int16_t footer(Arduino_GFX& gfx, const char* left, const char* right, int16_t sh
   gfx.drawFastHLine(ruleLeftX, ruleY, ruleRightX - ruleLeftX, theme::kPanelAlt);
 
   const int16_t textTop = ruleY + 8;
-  int16_t leftW = 0;
   const bool hasLeft = left != nullptr && left[0] != '\0';
-  if (hasLeft) {
-    leftW = textWidth(gfx, left, TextStyle::Caption);
-    text(gfx, textLeftX, textTop, left, TextStyle::Caption, theme::kTextDim);
+  const bool hasRight = right != nullptr && right[0] != '\0';
+
+  // Right wins the space, left yields: right holds action hints ("swipe:
+  // next", "hold: refresh") the user needs to operate the screen, while left
+  // holds status text (filenames, "3-8 of 24") that degrades fine when
+  // shortened. Measure right first — if the whole band can't hold it, drop
+  // it outright rather than half-draw it, same failure mode as before.
+  const int16_t bandW = textRightX - textLeftX;
+  int16_t rightW = hasRight ? textWidth(gfx, right, TextStyle::Caption) : 0;
+  const bool drawRight = hasRight && rightW <= bandW;
+  if (!drawRight) {
+    rightW = 0;
   }
-  if (right != nullptr && right[0] != '\0') {
-    const int16_t rightW = textWidth(gfx, right, TextStyle::Caption);
-    // Drop the hint rather than let it collide: a half-drawn hint reads as a
-    // rendering fault, an absent one reads as nothing at all. The 12px
-    // separation gap only applies when there is a left string to collide
-    // with — a right-only hint should use the full band.
-    const int16_t leftEdge = hasLeft ? textLeftX + leftW + 12 : textLeftX;
-    if (leftEdge <= textRightX - rightW) {
-      textRight(gfx, textRightX, textTop, right, TextStyle::Caption, theme::kTextDim);
+
+  // Whatever's left of the band, minus the 12px separation gap when a right
+  // string actually claimed space, is the left string's budget. It's drawn
+  // verbatim if it fits, ellipsized down to the budget if it doesn't, and
+  // skipped entirely if the right hint alone ate the whole band.
+  const int16_t leftBudget = (rightW > 0 ? textRightX - rightW - 12 : textRightX) - textLeftX;
+  if (hasLeft && leftBudget > 0) {
+    if (textWidth(gfx, left, TextStyle::Caption) <= leftBudget) {
+      text(gfx, textLeftX, textTop, left, TextStyle::Caption, theme::kTextDim);
+    } else {
+      char fitted[64];
+      fitWithEllipsis(gfx, left, leftBudget, TextStyle::Caption, fitted, sizeof(fitted));
+      text(gfx, textLeftX, textTop, fitted, TextStyle::Caption, theme::kTextDim);
     }
+  }
+  if (drawRight) {
+    textRight(gfx, textRightX, textTop, right, TextStyle::Caption, theme::kTextDim);
   }
   return ruleY - 12;
 }

@@ -53,21 +53,26 @@ int16_t lineHeight(TextStyle style);
 // Cap height: distance from the top-left the callers pass down to the baseline.
 int16_t ascent(Arduino_GFX& gfx, TextStyle style);
 
-// Shared screen header: title plus a hairline rule. Returns the y coordinate
-// immediately below the rule, so screens lay their content out from there
-// instead of each hardcoding a different top margin.
+// Shared screen header: title plus a hairline rule. Returns a padded
+// content-start just below the rule, so screens lay their content out from
+// there instead of each hardcoding a different top margin.
 int16_t header(Arduino_GFX& gfx, const char* title, int16_t shiftX, int16_t shiftY);
 
 // Shared bottom band, the mirror of header(): a hairline rule with left- and
 // optionally right-aligned caption text. The caption text is inset by
 // kSafeInset so nothing lands in the bezel's corner radius. `right` may be
-// nullptr.
+// nullptr. `right` holds action hints and wins the available space; `left`
+// (status text — filenames, "3-8 of 24", progress) yields, truncating with
+// an ellipsis when the two would collide.
 //
 // TWO BUGS THIS EXISTS TO KILL, both of which every hand-placed footer had:
 //   1. Caption text at x = kPadding (12) sits INSIDE the rounded corner at the
 //      bottom of the panel and gets clipped — hence kSafeInset for the text.
 //      The rule itself stays at kPadding: 44px up, it clears the radius, and
-//      matching header() keeps the two hairlines aligned.
+//      matching header() keeps the two hairlines aligned. The exact
+//      clearance is a working assumption (kSafeInset is asserted in prose at
+//      Theme.h:61, not measured against the physical bezel) pending
+//      on-device confirmation.
 //   2. Footers are persistent chrome and must drift with the burn-in offsets
 //      (spec §37) — not one of them passed shiftX/shiftY.
 // Returns the bottom of the caller's content budget, already padded clear of
