@@ -3,6 +3,7 @@
 #include <Preferences.h>
 
 #include "../board_config.h"
+#include "../ui/ClockFaces.h"
 #include "../ui/Theme.h"
 
 // Typed settings persisted in NVS. Every setter writes through immediately —
@@ -46,11 +47,6 @@ constexpr size_t kMaxDeviceNameLen = 32;
 constexpr size_t kMaxTimezoneLen = 48;  // POSIX TZ strings with DST rules run long
 constexpr size_t kMaxCityLen = 64;
 constexpr uint16_t kMinutesPerDay = 24 * 60;
-
-// Mirrors clockfaces::kFaceCount (apps/ClockFaces.h). Duplicated rather than
-// included so a service does not depend on an app; ClockFaces.h carries a
-// static_assert that fails if the two drift.
-constexpr uint8_t kClockFaceCount = 6;
 
 // Takes int, not uint8_t: comparing a uint8_t against MAX_BRIGHTNESS (255)
 // is always false and trips -Wtype-limits.
@@ -144,8 +140,13 @@ void SettingsService::load() {
   if (themeIndex_ >= theme::kThemeCount) {
     themeIndex_ = 0;
   }
+  // Downgrade protection lives here, not in the setter: if NVS holds a face
+  // index from a firmware with more faces than this one defines, clamp to
+  // the default before any caller ever observes the stale value. clockFace()
+  // only ever returns an already-clamped value. Untrusted NVS data, so this
+  // stays silent (unlike the setter's out-of-range branch, which is a bug).
   clockFace_ = prefs.getUChar(kKeyClockFace, 0);
-  if (clockFace_ >= kClockFaceCount) {
+  if (clockFace_ >= clockfaces::kFaceCount) {
     clockFace_ = 0;
   }
   bedtimeEnabled_ = prefs.getBool(kKeyBedtimeOn, false);
@@ -194,15 +195,29 @@ void SettingsService::setVolumePercent(uint8_t value) {
 }
 
 void SettingsService::setThemeIndex(uint8_t value) {
-  themeIndex_ = value < theme::kThemeCount ? value : 0;
+  const uint8_t next = value < theme::kThemeCount ? value : 0;
+  if (next == themeIndex_) {
+    return;  // an idle re-set must never touch flash
+  }
+  themeIndex_ = next;
   prefs.putUChar(kKeyTheme, themeIndex_);
 }
 
-// Clamps to 0 (the default face), not to the top of the range: a firmware
-// downgrade that removes faces must land on a known-good default, not on
-// whatever face now happens to occupy the highest surviving index.
+// The out-of-range branch here is a caller bug, not the downgrade scenario:
+// load() already guarantees clockFace_ starts in range, so a value that
+// needs clamping can only have come from this call's argument. Logged
+// (unlike load()'s silent clamp of untrusted NVS data) so a bad caller does
+// not turn into a silent mystery with no host test suite to catch it.
 void SettingsService::setClockFace(uint8_t value) {
-  clockFace_ = value < kClockFaceCount ? value : 0;
+  if (value >= clockfaces::kFaceCount) {
+    Serial.printf("[settings] warn: setClockFace(%u) out of range (max %u), using default\n",
+                  (unsigned)value, (unsigned)(clockfaces::kFaceCount - 1));
+  }
+  const uint8_t next = value < clockfaces::kFaceCount ? value : 0;
+  if (next == clockFace_) {
+    return;  // an idle re-set must never touch flash
+  }
+  clockFace_ = next;
   prefs.putUChar(kKeyClockFace, clockFace_);
 }
 

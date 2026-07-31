@@ -10,6 +10,7 @@
 #include "../../hardware/audio/AudioAdapter.h"
 #include "../../services/SettingsService.h"
 #include "../../services/WeatherService.h"
+#include "../../ui/ClockFaces.h"
 #include "../../ui/Theme.h"
 #include "../CmdArgs.h"
 
@@ -104,12 +105,17 @@ void printValue(SettingsService& s, const char* key) {
     Serial.println();
   } else if (strcmp(key, "bedtimebrightness") == 0) {
     Serial.printf("%u\n", (unsigned)s.bedtimeBrightness());
+  } else if (strcmp(key, "clockface") == 0) {
+    // No clockfaces::name() yet — Task 5 adds the renderers and the name
+    // lookup. Print the bare index rather than inventing a label.
+    Serial.printf("%u\n", (unsigned)s.clockFace());
   }
 }
 
 const char* const kKeys[] = {
     "brightness", "timeout",      "alwayson",     "devicename",       "timezone",
     "volume",     "bedtime",      "bedtimestart", "bedtimeend",       "bedtimebrightness",
+    "clockface",
 };
 constexpr size_t kKeyCount = sizeof(kKeys) / sizeof(kKeys[0]);
 
@@ -160,6 +166,8 @@ void printSettingsHelp() {
   Serial.println("  bedtimestart       HH:MM   bedtimeend  HH:MM   (wraps midnight)");
   Serial.printf("  bedtimebrightness  %u-%u — a nightly ceiling, never a floor\n",
                 (unsigned)MIN_BRIGHTNESS, (unsigned)MAX_BRIGHTNESS);
+  Serial.printf("  clockface          0-%u — selects the Clock app face (Task 5)\n",
+                (unsigned)(clockfaces::kFaceCount - 1));
   Serial.println("  weather.city       town name, e.g. London — geocoded over Wi-Fi");
   Serial.println("values out of range are clamped, and the stored value is printed back.");
   Serial.println("Wi-Fi credentials are not here: see 'help wifi'.");
@@ -345,6 +353,20 @@ bool handleSettingsCommand(Services& services, const char* verb, char* args) {
       Serial.printf("theme %u (%s, %s)\n", (unsigned)s.themeIndex(),
                     theme::themeName(s.themeIndex()),
                     theme::themeIsLight(s.themeIndex()) ? "light" : "dark");
+      return true;
+    }
+
+    if (strcmp(key, "clockface") == 0) {
+      // No name lookup yet (Task 5 adds clockfaces::name()) — numeric index
+      // only, mirroring theme's numeric path without the name-matching leg.
+      long v = -1;
+      if (!parseLong(value, v) || v < 0 || v >= clockfaces::kFaceCount) {
+        Serial.printf("usage: settings set clockface <0-%u>\n",
+                      (unsigned)(clockfaces::kFaceCount - 1));
+        return true;
+      }
+      s.setClockFace(static_cast<uint8_t>(v));
+      printValue(s, key);
       return true;
     }
 

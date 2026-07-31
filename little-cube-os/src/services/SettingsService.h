@@ -55,9 +55,7 @@ class SettingsService {
   uint8_t themeIndex() const { return themeIndex_; }
   void setThemeIndex(uint8_t value);
 
-  // Selected clock face (0..clockfaces::kFaceCount-1); see apps/ClockFaces.h.
-  // Stored as a plain uint8 rather than the enum so this header does not have
-  // to depend on an app header.
+  // Selected clock face (0..clockfaces::kFaceCount-1); see ui/ClockFaces.h.
   uint8_t clockFace() const { return clockFace_; }
   void setClockFace(uint8_t value);
 
