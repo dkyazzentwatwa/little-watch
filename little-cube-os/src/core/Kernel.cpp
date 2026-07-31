@@ -477,6 +477,7 @@ void kernelLoop() {
   // that is a frame stale.
   audioAdapter.update(deltaMs);
 #if FEATURE_VIDEO
+  // Independent of the reaper ordering described below.
   videoPlayer.update(deltaMs);
 #endif
   recorderService.update(deltaMs);
