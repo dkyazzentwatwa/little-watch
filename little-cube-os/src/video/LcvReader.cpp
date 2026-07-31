@@ -64,6 +64,9 @@ bool LcvReader::parse(const uint8_t* raw, LcvHeader& out, uint32_t fileSize, cha
     reason(reasonOut, reasonLen, "frames too large for playback");
     return false;
   }
+  // Reserved bytes (40..63) are deliberately NOT checked against zero: minor
+  // additive format extensions may use them without a version bump, and a v1
+  // reader stays forward-compatible by ignoring them.
   return true;
 }
 
@@ -98,7 +101,11 @@ bool LcvReader::open(const char* path, char* reasonOut, size_t reasonLen) {
     return false;
   }
   eof_ = false;
-  return file_.seek(header_.dataOffset);
+  if (!file_.seek(header_.dataOffset)) {
+    close();  // an I/O fault here (card pulled mid-open) must not leak the handle
+    return false;
+  }
+  return true;
 }
 
 void LcvReader::close() {
@@ -116,8 +123,12 @@ bool LcvReader::seekToFrame(uint32_t frame) {
   if (!file_.seek(header_.indexOffset + 4 * frame) || file_.read(raw, 4) != 4) {
     return false;
   }
+  const uint32_t off = rd32(raw);
+  if (off < header_.dataOffset || off >= header_.indexOffset) {
+    return false;  // corrupted index entry — never seek outside the data region
+  }
   eof_ = false;
-  return file_.seek(rd32(raw));
+  return file_.seek(off);
 }
 
 bool LcvReader::nextChunk(ChunkType& typeOut, uint32_t& sizeOut) {
@@ -140,6 +151,17 @@ bool LcvReader::nextChunk(ChunkType& typeOut, uint32_t& sizeOut) {
   typeOut = static_cast<ChunkType>(type);
   sizeOut = static_cast<uint32_t>(raw[1]) | (static_cast<uint32_t>(raw[2]) << 8) |
             (static_cast<uint32_t>(raw[3]) << 16);
+  // Bound the chunk before the caller sizes a read from it: a video payload
+  // may never exceed the header's maxFrameBytes, and no chunk of any type may
+  // extend past the start of the index. (maxFrameBytes describes video
+  // payloads only — audio chunks are bounded by the layout check alone.)
+  if (typeOut == ChunkType::Video && sizeOut > header_.maxFrameBytes) {
+    return false;
+  }
+  const uint32_t pad = (4 - (sizeOut % 4)) % 4;
+  if (static_cast<uint64_t>(file_.position()) + sizeOut + pad > header_.indexOffset) {
+    return false;
+  }
   return true;
 }
 

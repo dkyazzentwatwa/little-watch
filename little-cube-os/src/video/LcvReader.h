@@ -37,7 +37,7 @@ class LcvReader {
 
   bool open(const char* path, char* reasonOut, size_t reasonLen);
   void close();
-  bool isOpen() { return static_cast<bool>(file_); }
+  bool isOpen() const { return static_cast<bool>(file_); }
   const LcvHeader& header() const { return header_; }
 
   // Position the cursor at frame group N via the on-disk index: a single
@@ -47,8 +47,8 @@ class LcvReader {
   // Read the next chunk header. False at end of data (endOfData()) or on a
   // short/failed read.
   bool nextChunk(ChunkType& typeOut, uint32_t& sizeOut);
-  // Read the current chunk payload (sizeBytes from nextChunk) into buf and
-  // skip the alignment padding. buf must hold sizeBytes.
+  // Read the current chunk payload into buf and skip the alignment padding.
+  // sizeBytes must come from nextChunk(), which has already bounded it.
   bool readChunk(uint8_t* buf, uint32_t sizeBytes);
   bool skipChunk(uint32_t sizeBytes);
   // True when the cursor reached indexOffset cleanly — the natural end.
