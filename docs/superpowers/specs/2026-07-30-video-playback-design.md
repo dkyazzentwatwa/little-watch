@@ -76,7 +76,7 @@ codec + I2S + amp:
 ```cpp
 bool     beginPcmStream(uint32_t sampleRate, uint8_t channels);
 size_t   writePcm(const int16_t* samples, size_t count, uint32_t timeoutMs);
-uint64_t pcmSamplesPlayed() const;   // A/V master clock
+uint32_t pcmSamplesPlayed() const;   // 32-bit: atomic cross-task read
 void     endPcmStream();
 ```
 

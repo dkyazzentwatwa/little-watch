@@ -29,6 +29,10 @@
 //     which every later filesystem operation blocks for the full FATFS
 //     timeout and fails. Tasks only ever exit themselves — do not "helpfully"
 //     add a force-kill here.
+//   * The externally-fed PCM stream mode uses NONE of this machinery: no
+//     adapter-owned task, no semaphore. The caller's own task pushes samples
+//     through writePcm() and the loop task flips pcmActive_ — see the
+//     "Externally-fed PCM stream" block below.
 class AudioAdapter {
  public:
   bool begin();
@@ -143,6 +147,7 @@ class AudioAdapter {
   void releaseDriverIfIdle();
 
   // Bounded blocking wait. NEVER call from kernelLoop() — reboot/shutdown only.
+  // Ignores an open PCM stream (currently uncalled; revisit if wired into shutdown).
   bool waitIdle(uint32_t timeoutMs);
 
   void update(uint32_t deltaMs);
@@ -190,6 +195,8 @@ class AudioAdapter {
 
   volatile bool pcmActive_ = false;
   volatile bool pcmPaused_ = false;
+  // Deliberately 32-bit (not the design sketch's uint64): a cross-task read
+  // must be a single atomic word load on this core. Do not widen.
   volatile uint32_t pcmSamples_ = 0;
 
   uint32_t sleepRemainingMs_ = 0;

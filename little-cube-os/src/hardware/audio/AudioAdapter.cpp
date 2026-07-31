@@ -832,6 +832,9 @@ bool AudioAdapter::beginPcmStream(uint32_t sampleRate, uint8_t channels) {
 }
 
 size_t AudioAdapter::writePcm(const int16_t* samples, size_t count) {
+  if (samples == nullptr) {
+    return 0;
+  }
   static constexpr size_t kChunkFrames = 256;
   int16_t stereo[kChunkFrames * 2];
   size_t done = 0;
