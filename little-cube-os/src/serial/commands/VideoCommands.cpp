@@ -55,10 +55,10 @@ bool handleVideoCommand(Services& services, const char* verb, char* args) {
   if (strcmp(verb, "list") == 0) {
     char* cursor = args;
     const char* dir = cmdargs::nextToken(cursor);
-    VideoInfo items[8];
+    VideoInfo items[VideoService::kMaxListWindow];
     size_t total = 0;
-    const size_t n =
-        video->list(dir != nullptr ? dir : paths::kVideo, items, 8, &total);
+    const size_t n = video->list(dir != nullptr ? dir : paths::kVideo, items,
+                                  VideoService::kMaxListWindow, &total);
     for (size_t i = 0; i < n; i++) {
       if (items[i].isDir) {
         Serial.printf("  [dir]  %s\n", items[i].name);

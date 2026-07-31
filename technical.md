@@ -38,11 +38,12 @@ docs/                  product contract, interfaces, designs, and validation
 dist/                  generated build output
 ```
 
-The firmware currently registers 15 apps: Home, Today, Clock, Weather,
+The firmware currently registers 16 apps: Home, Today, Clock, Weather,
 Calendar, Notes, Recorder, Assistant, Audio, Files, Contacts, Calculator,
-Settings, Reader, and News. Services handle Wi-Fi provisioning, weather, time,
-notes, recordings, audio, contacts, calendar, podcasts, news, and assistant
-requests, and live MP3 radio streams.
+Settings, Reader, News, and Video. Services handle Wi-Fi provisioning, weather,
+time, notes, recordings, audio, contacts, calendar, podcasts, news, and
+assistant requests, and live MP3 radio streams. Video playback decodes `.lcv`
+(MJPEG + PCM) files from the SD card — see `docs/lcv-format.md`.
 
 ## Runtime and architecture
 

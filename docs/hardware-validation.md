@@ -150,3 +150,45 @@ performing the step on the device and observing the described result.
 - [ ] Cold boot -> Home carousel -> insert SD -> read note -> serial
       multiline note -> reboot -> note persists -> phone Wi-Fi setup ->
       weather updates -> record voice note -> play it back
+
+## Video (FEATURE_VIDEO)
+
+Prereq: at least one real `.lcv` on the card under `/littlecube/video/`
+(`./scripts/pack-video.sh episode.mkv`), verified `OK` by
+`scripts/lcv_mux.py inspect` on the computer first.
+
+- [ ] `video list` over serial shows the file with the correct duration
+- [ ] Library UI lists it; tap starts playback; device turned sideways shows
+      the picture upright and filling the panel's long axis
+- [ ] Colors correct (if red/blue swap: flip the `setPixelType` endianness
+      in `VideoPlayer.cpp::decodeFrame`)
+- [ ] Chrome reads the same way up as the picture (if upside-down: apply the
+      transpose flip noted in `VideoApp.cpp::renderChrome`)
+- [ ] Lip-sync: dialogue matches mouths after 5+ minutes of playback
+      (audio-master check; tune `kDmaDepthSamples` in `VideoPlayer.h` if
+      video leads/trails)
+- [ ] High-motion scene: frames drop (`video status` dropped counter rises)
+      while audio stays clean and unbroken. If video-side stalls appear,
+      `kRingSlots` may be raised to 8 (must divide 256; ~2x PSRAM)
+- [ ] Natural end: expect the last ~3 frames to snap (dropped by design as
+      the clock runs out) and ~370 ms of audio tail to drain after the
+      screen returns; an auto-advance splices the next episode behind that
+      tail (documented v1 limitation)
+- [ ] Pause: instant silence + frozen frame; resume continues in sync
+- [ ] Seek via scrub bar and `video seek +60`; picture + audio land together
+      (~370 ms of pre-seek audio drains across the splice — documented)
+- [ ] Stop, reopen the episode: resume offer at the right position
+- [ ] Watch an episode to the end: position record cleared, next `.lcv` in
+      the folder auto-plays; the LAST file in a folder returns to the library
+- [ ] Serial `video play` while the app is open on the library: adopts to
+      the player screen within a tick
+- [ ] `video status` reports sane fps/shown/dropped/ring during playback
+- [ ] Recording refusal both directions (`video play` during a recording;
+      recording start during playback)
+- [ ] Card yank mid-play: specific error state, no hang; recorder still
+      works afterwards; reinserted card lists again
+- [ ] Battery < 10 %: warning screen appears before playback starts
+- [ ] Back (BOOT short) in the player exits to the library; long-press Home
+      leaves the app, playback stops, position saved
+- [ ] Leave the cube on the Home screen 10+ min after watching: no video
+      chrome burn-in artifacts (AmoledProtection shifts applied)
