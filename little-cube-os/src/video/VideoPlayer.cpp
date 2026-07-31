@@ -21,11 +21,10 @@ void reason(char* out, size_t len, const char* msg) {
   }
 }
 
-// File-scope by necessity, not just size (~17.5 KB, .bss): JPEGDEC's draw
-// callback is a plain function pointer with no user-data slot, so
-// jpegDrawBlock needs a global anchor (jpegTarget) to reach the display.
-// Moving jpegDecoder into VideoPlayer would not remove that need, and there
-// is only ever one VideoPlayer (kernel singleton). Decode runs on the loop
+// File-scope by choice, not just size (~17.5 KB, .bss): reaching the display
+// from JPEGDEC's C-style draw callback needs either its pUser slot plus a
+// cast, or a global anchor — with a single kernel-owned VideoPlayer the
+// global (jpegTarget) is the simpler of the two. Decode runs on the loop
 // task only.
 JPEGDEC jpegDecoder;
 Arduino_GFX* jpegTarget = nullptr;
