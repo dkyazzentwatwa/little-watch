@@ -12,6 +12,30 @@
 
 ---
 
+## ⚠️ Geometry in this plan was written by eye — verify it
+
+Task 2's review measured all seven new weather glyphs against the
+`[x, x+size) x [y, y+size)` box contract and found **six of seven overflowed**,
+by up to 11 px. The thirteen pre-existing glyphs were run through the same
+model as a control and all fit, so the contract is real and the plan's code was
+simply wrong. The same applies to every drawing block below — the clock faces
+in Tasks 5 and 6 contain considerably more geometry than Task 2 did.
+
+Two facts that caused most of those bugs, worth knowing before writing any
+drawing code here:
+
+- **`fillCircle` spans `2r+1` pixels**, `[c-r, c+r]` inclusive — not `2r`.
+  Confirmed in the vendored `GFX_Library_for_Arduino` source. Every "off by one
+  on the right edge" bug in Task 2 came from assuming otherwise.
+- **`Arduino_GFX` clips at the canvas edge**, so an overflow can never corrupt
+  the framebuffer or crash. It just collides with adjacent UI. This is why a
+  clean compile *and* a clean boot both tell you nothing about it.
+
+Do the algebra before committing drawing code, at every size the glyph is
+actually used at (`t = max(2, size/16)` changes with size, so a shape that fits
+at 56 can overflow at 96). A throwaway script that models the primitives'
+extents settles it in a second and is cheaper than a flash cycle.
+
 ## How to verify in this repo
 
 **There is no unit-test suite and no host-side harness.** `CLAUDE.md` is explicit:
@@ -233,6 +257,12 @@ Place these after the existing `strokeRect()`:
 constexpr int8_t kRayCos[8] = {127, 90, 0, -90, -127, -90, 0, 90};
 constexpr int8_t kRaySin[8] = {0, 90, 127, 90, 0, -90, -127, -90};
 
+// Perpendicular unit steps per direction (kRayCos/kRaySin rotated 90°, sign
+// only). The /128 tables truncate to 0 at these magnitudes, so a perpendicular
+// derived from them would silently vanish.
+constexpr int8_t kPerpX[8] = {0, -1, -1, -1, 0, 1, 1, 1};
+constexpr int8_t kPerpY[8] = {1, 1, 0, -1, -1, -1, 0, 1};
+
 void sunDisc(Arduino_GFX& gfx, int16_t cx, int16_t cy, int16_t r, int16_t t,
              uint16_t color) {
   gfx.fillCircle(cx, cy, r, color);
@@ -243,8 +273,14 @@ void sunDisc(Arduino_GFX& gfx, int16_t cx, int16_t cy, int16_t r, int16_t t,
     const int16_t y0 = cy + static_cast<int16_t>(inner * kRaySin[i] / 128);
     const int16_t x1 = cx + static_cast<int16_t>(outer * kRayCos[i] / 128);
     const int16_t y1 = cy + static_cast<int16_t>(outer * kRaySin[i] / 128);
+    // Thicken perpendicular to the ray, not along x: an x-only offset draws
+    // duplicate scanlines on horizontal rays and under-thickens diagonals.
+    // Centre the offset so the ray sits on its true radial line.
     for (int16_t o = 0; o < t; o++) {
-      gfx.drawLine(x0 + o, y0, x1 + o, y1, color);
+      const int16_t k = o - t / 2;
+      const int16_t ox = static_cast<int16_t>(k * kPerpX[i]);
+      const int16_t oy = static_cast<int16_t>(k * kPerpY[i]);
+      gfx.drawLine(x0 + ox, y0 + oy, x1 + ox, y1 + oy, color);
     }
   }
 }
@@ -254,12 +290,27 @@ void sunDisc(Arduino_GFX& gfx, int16_t cx, int16_t cy, int16_t r, int16_t t,
 void cloudPuff(Arduino_GFX& gfx, int16_t x, int16_t y, int16_t w, uint16_t color) {
   const int16_t r = w / 4;
   const int16_t baseY = y + r + r / 2;
+  // Crown radius is r + r/4, not the more dramatic r + r/3 it might look
+  // like it wants: centring the crown so its top edge lands exactly on y
+  // (required to stop it overflowing above the box) pushes its bottom edge
+  // down too, and r + r/3 pushes that bottom edge past the box in the
+  // WxPartlyCloudy call, which starts this helper higher inside its box
+  // than the other five callers do.
+  const int16_t crownR = r + r / 4;
   gfx.fillCircle(x + r, baseY, r, color);
-  gfx.fillCircle(x + w - r, baseY, r, color);
-  gfx.fillCircle(x + w / 2, y + r, r + r / 3, color);
+  gfx.fillCircle(x + w - r - 1, baseY, r, color);  // w - r would land one past the right edge
+  gfx.fillCircle(x + w / 2, y + crownR, crownR, color);
   gfx.fillRect(x + r, baseY, w - 2 * r, r, color);
 }
 ```
+
+⚠️ **This geometry is the reviewed and bounds-verified version.** The first
+draft of it overflowed the box on six of seven glyphs. Three separate causes,
+all worth knowing before writing similar code: `fillCircle` spans `2r+1`;
+moving a circle's centre moves *both* its edges, so "anchor the top edge at
+`y`" also pushes the bottom down; and a stagger anchored from the top grows
+past the box as `t` scales with size, while one anchored from the bottom
+cannot.
 
 - [ ] **Step 3: Add the seven cases to the `switch (id)` in `draw()`**
 
@@ -271,7 +322,10 @@ Insert before the closing brace of the switch:
       break;
     }
     case IconId::WxPartlyCloudy: {
-      sunDisc(gfx, x + q + t, y + q, q - t, t, color);
+      // sunDisc reaches r + 3t from its centre; with r = q - t that's q + 2t,
+      // so the centre needs to sit at least q + 2t from the top-left corner.
+      // Moved rather than shrunk, or the disc reads as a dot at small sizes.
+      sunDisc(gfx, x + q + t * 2, y + q + t * 2, q - t, t, color);
       cloudPuff(gfx, x + q / 2, cy - q / 4, size - q / 2, color);
       break;
     }
@@ -285,7 +339,7 @@ Insert before the closing brace of the switch:
       for (int i = 0; i < 3; i++) {
         const int16_t dx = x + q - t + static_cast<int16_t>(i) * q;
         for (int16_t o = 0; o < t; o++) {
-          gfx.drawLine(dx + o, y + size - q, dx - q / 3 + o, y + size, color);
+          gfx.drawLine(dx + o, y + size - q, dx - q / 3 + o, y + size - 1, color);
         }
       }
       break;
@@ -304,14 +358,16 @@ Insert before the closing brace of the switch:
       const int16_t bx = cx;
       const int16_t by = y + size - q * 2;
       gfx.fillTriangle(bx + q / 2, by, bx - q / 2, by + q, bx + t, by + q, color);
-      gfx.fillTriangle(bx + q / 2, by + q, bx - q / 3, by + q * 2, bx - t, by + q, color);
+      gfx.fillTriangle(bx + q / 2, by + q, bx - q / 3, y + size - 1, bx - t, by + q, color);
       break;
     }
     case IconId::WxFog: {
       cloudPuff(gfx, x, y, size, color);
       // Three staggered bars: fog is the cloud, sitting on the ground.
+      // Anchored from the bottom so the stagger can't run past the box —
+      // anchoring from the top (y + size - q) did, growing with size.
       for (int i = 0; i < 3; i++) {
-        const int16_t by = y + size - q + static_cast<int16_t>(i) * (t * 2);
+        const int16_t by = y + size - t - static_cast<int16_t>(2 - i) * (t * 2);
         const int16_t inset = static_cast<int16_t>(i) * q / 2;
         gfx.fillRect(x + inset, by, size - inset * 2, t, color);
       }
