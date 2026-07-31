@@ -145,28 +145,45 @@ int16_t header(Arduino_GFX& gfx, const char* title, int16_t shiftX, int16_t shif
 int16_t footer(Arduino_GFX& gfx, const char* left, const char* right, int16_t shiftX,
                int16_t shiftY) {
   // Rule at -44 rather than the -28 the old call sites used: caption ink then
-  // ends ~19 px above the bottom edge, which clears the corner radius at a
-  // 20 px horizontal inset. -28 did not.
+  // ends ~19 px above the bottom edge. That is the working assumption for
+  // clearing the corner radius the old -28 footers visibly clipped against —
+  // kSafeInset = 20 is asserted in prose at Theme.h:61, not a measured
+  // hardware constant, so treat this as pending on-device confirmation.
+  //
+  // shiftX/shiftY (burn-in drift, spec §37) apply on top of both insets below
+  // rather than being clamped — clamping would defeat the drift. In the worst
+  // quadrant (shiftX = -2, shiftY = +2) the effective inset is 18px/17px, not
+  // the nominal 20/19 the comments above and below reason about.
   const int16_t ruleY = DISPLAY_HEIGHT - 44 + shiftY;
-  const int16_t leftX = theme::kSafeInset + shiftX;
-  const int16_t rightX = DISPLAY_WIDTH - theme::kSafeInset + shiftX;
-  gfx.drawFastHLine(leftX, ruleY, rightX - leftX, theme::kPanelAlt);
+  // The rule aligns with header()'s rule (kPadding .. width - kPadding) so the
+  // two hairlines share an inset. The caption TEXT sits further in, at
+  // kSafeInset, because it lives only 19px off the bottom edge — inside the
+  // corner-radius zone the rule itself, 44px up, does not reach.
+  const int16_t ruleLeftX = theme::kPadding + shiftX;
+  const int16_t ruleRightX = DISPLAY_WIDTH - theme::kPadding + shiftX;
+  const int16_t textLeftX = theme::kSafeInset + shiftX;
+  const int16_t textRightX = DISPLAY_WIDTH - theme::kSafeInset + shiftX;
+  gfx.drawFastHLine(ruleLeftX, ruleY, ruleRightX - ruleLeftX, theme::kPanelAlt);
 
   const int16_t textTop = ruleY + 8;
   int16_t leftW = 0;
-  if (left != nullptr && left[0] != '\0') {
+  const bool hasLeft = left != nullptr && left[0] != '\0';
+  if (hasLeft) {
     leftW = textWidth(gfx, left, TextStyle::Caption);
-    text(gfx, leftX, textTop, left, TextStyle::Caption, theme::kTextDim);
+    text(gfx, textLeftX, textTop, left, TextStyle::Caption, theme::kTextDim);
   }
   if (right != nullptr && right[0] != '\0') {
     const int16_t rightW = textWidth(gfx, right, TextStyle::Caption);
     // Drop the hint rather than let it collide: a half-drawn hint reads as a
-    // rendering fault, an absent one reads as nothing at all.
-    if (leftX + leftW + 12 <= rightX - rightW) {
-      textRight(gfx, rightX, textTop, right, TextStyle::Caption, theme::kPanelAlt);
+    // rendering fault, an absent one reads as nothing at all. The 12px
+    // separation gap only applies when there is a left string to collide
+    // with — a right-only hint should use the full band.
+    const int16_t leftEdge = hasLeft ? textLeftX + leftW + 12 : textLeftX;
+    if (leftEdge <= textRightX - rightW) {
+      textRight(gfx, textRightX, textTop, right, TextStyle::Caption, theme::kTextDim);
     }
   }
-  return ruleY;
+  return ruleY - 12;
 }
 
 Rect button(Arduino_GFX& gfx, int16_t x, int16_t y, int16_t w, int16_t h, const char* label,
