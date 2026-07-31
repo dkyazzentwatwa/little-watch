@@ -35,6 +35,7 @@ echo "[build] compiling little-cube-os"
   --library "${ARDUINO_LIB_ROOT}/SensorLib" \
   --library "${ARDUINO_LIB_ROOT}/ArduinoJson" \
   --library "${ARDUINO_LIB_ROOT}/ESP8266Audio" \
+  --library "${ARDUINO_LIB_ROOT}/JPEGDEC" \
   --library "${ROOT}/libraries/Arduino_DriveBus" \
   --output-dir "${ROOT}/dist" \
   "${ROOT}/little-cube-os"

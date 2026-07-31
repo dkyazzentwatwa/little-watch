@@ -26,6 +26,7 @@ echo "[install] libraries"
 "${ARDUINO_CLI}" lib install "SensorLib"
 "${ARDUINO_CLI}" lib install "ArduinoJson@7.4.3"
 "${ARDUINO_CLI}" lib install "ESP8266Audio@2.4.1"
+"${ARDUINO_CLI}" lib install "JPEGDEC@1.8.4"
 
 if [[ ! -d "${ROOT}/libraries/Arduino_DriveBus" ]]; then
   echo "Error: vendored libraries/Arduino_DriveBus is missing from this repo." >&2

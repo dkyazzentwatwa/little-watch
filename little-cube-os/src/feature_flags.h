@@ -16,6 +16,11 @@
 #define FEATURE_BATTERY_MONITOR 1
 #define FEATURE_CAMERA 0
 
+// Video playback (docs/superpowers/specs/2026-07-30-video-playback-design.md).
+// Compiles out the whole subsystem: LcvReader, VideoPlayer, VideoService,
+// VideoApp, the `video` serial family, and every JPEGDEC use.
+#define FEATURE_VIDEO 1
+
 // Home screen layout (spec §7). Carousel is the default; define
 // LITTLECUBE_HOME_LAYOUT_GRID to build the 2x2 grid variant instead.
 enum class HomeLayout {

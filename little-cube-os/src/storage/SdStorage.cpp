@@ -19,6 +19,7 @@ constexpr const char* kTree[] = {
     paths::kPodcastFeeds,
     paths::kPodcastDownloads,
     paths::kRadio,
+    paths::kVideo,
     paths::kCalendar,
     paths::kContacts,
     paths::kDocuments,
