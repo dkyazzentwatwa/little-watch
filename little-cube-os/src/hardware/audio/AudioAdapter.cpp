@@ -815,7 +815,7 @@ void AudioAdapter::pausePlayback(bool paused) {
 // ---- Externally-fed PCM stream (video audio) --------------------------------
 
 bool AudioAdapter::beginPcmStream(uint32_t sampleRate, uint8_t channels) {
-  if (!ready_ || channels != 1) {
+  if (channels != 1) {
     return false;
   }
   if (playState_ != PlayState::Idle || recState_ != RecState::Idle || pcmActive_) {
