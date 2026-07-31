@@ -70,9 +70,19 @@ int16_t capHeight(Arduino_GFX& gfx, TextStyle style) {
 // the first glyph's ink usually starts a pixel or two right of the cursor.
 void inkBounds(Arduino_GFX& gfx, const char* s, TextStyle style, int16_t& x1, uint16_t& w) {
   applyStyle(gfx, style);
+  // getTextBounds() APPLIES WRAPPING. With wrap left on (the default), any
+  // string wider than the canvas comes back folded, so the reported width is
+  // the width of the LAST wrapped line — smaller than the truth, silently.
+  //
+  // That is a measurement returning a number that looks plausible while being
+  // wrong in the unsafe direction: footer()'s ellipsis clamp and every
+  // centering helper would conclude an over-long string fits. Measure with
+  // wrapping off; the caller decides what to do about strings that don't fit.
+  gfx.setTextWrap(false);
   int16_t y1 = 0;
   uint16_t h = 0;
   gfx.getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
+  gfx.setTextWrap(true);
   restoreFont(gfx);
 }
 
