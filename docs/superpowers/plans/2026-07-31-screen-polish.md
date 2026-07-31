@@ -285,8 +285,21 @@ void sunDisc(Arduino_GFX& gfx, int16_t cx, int16_t cy, int16_t r, int16_t t,
     // 45° Bresenham line one pixel apart touch at corners only, so the four
     // diagonal rays came out as dotted chains while the axis rays were solid.
     // fillTriangle fills solid at any orientation.
-    const int16_t hx = static_cast<int16_t>(-kRaySin[i] * t / 256);
-    const int16_t hy = static_cast<int16_t>(kRayCos[i] * t / 256);
+    //
+    // The rendered band is 2*floor(127t/256) + 1 px, not t: t for odd t,
+    // t-1 for even. Rounding half-up overshoots to t+1, which is worse.
+    // Diagonals also render 15-25% heavier than the axis rays; stepping the
+    // diagonal offset down one integer makes them ~24% too thin instead. Both
+    // errors are symmetric and not fixable without subpixel coverage.
+    int16_t hx = static_cast<int16_t>(-kRaySin[i] * t / 256);
+    int16_t hy = static_cast<int16_t>(kRayCos[i] * t / 256);
+    if (hx == 0 && hy == 0) {
+      // t == 2 (sizes 21-47): both offsets truncate to 0 and the quad
+      // collapses to a zero-area line. Force a +-1 perpendicular step so
+      // the ray stays a filled shape instead of vanishing.
+      hx = static_cast<int16_t>(kRaySin[i] > 0 ? -1 : (kRaySin[i] < 0 ? 1 : 0));
+      hy = static_cast<int16_t>(kRayCos[i] > 0 ? 1 : (kRayCos[i] < 0 ? -1 : 0));
+    }
     gfx.fillTriangle(x0 + hx, y0 + hy, x0 - hx, y0 - hy, x1 - hx, y1 - hy, color);
     gfx.fillTriangle(x0 + hx, y0 + hy, x1 + hx, y1 + hy, x1 - hx, y1 - hy, color);
   }
