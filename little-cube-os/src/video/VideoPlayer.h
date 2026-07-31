@@ -79,7 +79,7 @@ class VideoPlayer {
   bool startTask(uint32_t startFrame);
   void finishPlayback();
   void consumeFrames();
-  bool decodeFrame(uint8_t slot);  // Task 6 fills this in with JPEGDEC
+  bool decodeFrame(uint8_t slot);  // JPEGDEC decode into the frame canvas (loop task only)
   bool allocBuffers();
   void freeBuffers();
   uint32_t clockSamples() const;  // audio clock minus the in-flight DMA estimate

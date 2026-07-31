@@ -2,6 +2,8 @@
 
 #if FEATURE_VIDEO
 
+#include <Arduino_GFX_Library.h>
+#include <JPEGDEC.h>
 #include <esp_heap_caps.h>
 #include <string.h>
 
@@ -17,6 +19,16 @@ void reason(char* out, size_t len, const char* msg) {
     strncpy(out, msg, len - 1);
     out[len - 1] = '\0';
   }
+}
+
+// File-scope: JPEGDEC's state struct is large (~17 KB) and lives in .bss
+// rather than on any stack. Decode runs on the loop task only.
+JPEGDEC jpegDecoder;
+Arduino_GFX* jpegTarget = nullptr;
+
+int jpegDrawBlock(JPEGDRAW* d) {
+  jpegTarget->draw16bitRGBBitmap(d->x, d->y, d->pPixels, d->iWidth, d->iHeight);
+  return 1;
 }
 
 }  // namespace
@@ -304,8 +316,28 @@ void VideoPlayer::consumeFrames() {
 }
 
 bool VideoPlayer::decodeFrame(uint8_t slot) {
-  (void)slot;
-  return true;  // Task 6 replaces this with the JPEGDEC decode
+  Arduino_GFX* gfx = display_->canvas();
+  if (gfx == nullptr) {
+    return false;
+  }
+  jpegTarget = gfx;
+  // Frames are stored pre-rotated by the packer; center on the panel's
+  // short axis.
+  const int16_t offsetX = static_cast<int16_t>((DISPLAY_WIDTH - header_.width) / 2);
+  if (!jpegDecoder.openRAM(slots_[slot], static_cast<int>(slotBytes_[slot]),
+                           jpegDrawBlock)) {
+    return false;
+  }
+  // If colors come out wrong on device, switch to RGB565_BIG_ENDIAN — the
+  // canvas framebuffer byte order is the only open question here.
+  jpegDecoder.setPixelType(RGB565_LITTLE_ENDIAN);
+  const int ok = jpegDecoder.decode(offsetX, 0, 0);
+  jpegDecoder.close();
+  if (ok != 1) {
+    return false;
+  }
+  display_->markDirty();
+  return true;
 }
 
 void VideoPlayer::update(uint32_t deltaMs) {
