@@ -1,6 +1,7 @@
 #include "AppRegistry.h"
 
 #include "../core/AppRouter.h"
+#include "../feature_flags.h"
 #include "AssistantApp.h"
 #include "AudioApp.h"
 #include "CalculatorApp.h"
@@ -16,6 +17,9 @@
 #include "SettingsApp.h"
 #include "TodayApp.h"
 #include "WeatherApp.h"
+#if FEATURE_VIDEO
+#include "VideoApp.h"
+#endif
 
 void registerApps(AppRouter& router, Services& services) {
   static HomeApp home(services);
@@ -33,6 +37,10 @@ void registerApps(AppRouter& router, Services& services) {
   static SettingsApp settings(services);
   static ReaderApp reader(services);
   static NewsApp news(services);
+#if FEATURE_VIDEO
+  static VideoApp video(services);
+  router.registerApp(AppId::Video, &video);
+#endif
 
   router.registerApp(AppId::Home, &home);
   router.registerApp(AppId::Today, &today);

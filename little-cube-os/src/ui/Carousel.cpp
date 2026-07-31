@@ -5,6 +5,7 @@
 #include "../board_config.h"
 #include "../core/Services.h"
 #include "../core/SystemState.h"
+#include "../feature_flags.h"
 #include "../hardware/SdCardAdapter.h"
 #include "../hardware/audio/AudioAdapter.h"
 #include "../services/AssistantService.h"
@@ -27,6 +28,9 @@ constexpr Carousel::Card kCards[] = {
     {AppId::Recorder, "Recorder", "voice notes", icons::IconId::Recorder, false},
     {AppId::Assistant, "Assistant", "voice AI", icons::IconId::Assistant, false},
     {AppId::Audio, "Audio", "sound", icons::IconId::Audio, false},
+#if FEATURE_VIDEO
+    {AppId::Video, "Video", "tv & anime", icons::IconId::Video, false},
+#endif
     {AppId::Calendar, "Calendar", "agenda", icons::IconId::Calendar, false},
     {AppId::Settings, "Settings", "device", icons::IconId::Settings, false},
     {AppId::Files, "Tools", "files & more", icons::IconId::Tools, true},
