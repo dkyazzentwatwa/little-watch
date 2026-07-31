@@ -128,6 +128,10 @@ bool VideoPlayer::startTask(uint32_t startFrame) {
     return false;
   }
   xSemaphoreTake(done_, 0);  // drain any stale give, mirroring AudioAdapter's starts
+  // Priority 3, above audioRecordTask's 2: safe because record and video are
+  // mutually exclusive by the half-duplex gate, and this task feeds the audio
+  // DMA — starving it means audible underrun, the one failure the design
+  // forbids.
   if (xTaskCreatePinnedToCore(videoReaderTask, "vidread", 6144, this, 3, nullptr, 0) !=
       pdPASS) {
     return false;
@@ -245,6 +249,10 @@ uint32_t VideoPlayer::positionMs() const {
   return pos > header_.durationMs ? header_.durationMs : static_cast<uint32_t>(pos);
 }
 
+// NOTE: endPcmStream() never flushes the I2S DMA, so up to ~370 ms of this
+// episode's audio tail keeps draining after completion — an auto-advance that
+// starts the next file immediately splices in behind it, same class of
+// limitation as the documented seek splice. Accepted for v1.
 void VideoPlayer::finishPlayback() {
   if (paused_) {
     paused_ = false;

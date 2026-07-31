@@ -84,7 +84,9 @@ class VideoPlayer {
   void freeBuffers();
   uint32_t clockSamples() const;  // audio clock minus the in-flight DMA estimate
 
-  static constexpr uint32_t kDmaDepthSamples = 4096;  // I2S depth estimate; tune on device
+  // I2S depth estimate; tune on device via the lip-sync item in
+  // docs/hardware-validation.md §Video (lands with the final plan task).
+  static constexpr uint32_t kDmaDepthSamples = 4096;
   static constexpr uint8_t kMaxConsecutiveBad = 15;
 
   AudioAdapter* audio_ = nullptr;
@@ -110,7 +112,12 @@ class VideoPlayer {
   volatile bool stopReq_ = false;
   volatile bool taskEof_ = false;
   volatile bool taskFailed_ = false;
-  bool taskDone_ = false;  // loop task: reader exited, ring may still drain
+  // taskRunning_: a reader task exists whose done_ give has not been reaped.
+  // taskDone_: reaped from Playing with the ring still draining. Distinct on
+  // purpose — Stopping resolves immediately when taskRunning_ is already
+  // false, which is exactly the case a "simplification" merging these two
+  // flags would break (the stuck-Stopping bug).
+  bool taskDone_ = false;
   bool taskRunning_ = false;
 
   bool paused_ = false;
