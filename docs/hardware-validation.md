@@ -169,7 +169,9 @@ Prereq: at least one real `.lcv` on the card under `/littlecube/video/`
       video leads/trails)
 - [ ] High-motion scene: frames drop (`video status` dropped counter rises)
       while audio stays clean and unbroken. If video-side stalls appear,
-      `kRingSlots` may be raised to 8 (must divide 256; ~2x PSRAM)
+      `kRingSlots` may be raised to 8 (must divide 256; ~2x PSRAM) — raise it
+      BEFORE raising `kDmaDepthSamples` past 5880 (see the invariant in
+      `VideoPlayer.h`)
 - [ ] Natural end: expect the last ~3 frames to snap (dropped by design as
       the clock runs out) and ~370 ms of audio tail to drain after the
       screen returns; an auto-advance splices the next episode behind that
@@ -190,5 +192,9 @@ Prereq: at least one real `.lcv` on the card under `/littlecube/video/`
 - [ ] Battery < 10 %: warning screen appears before playback starts
 - [ ] Back (BOOT short) in the player exits to the library; long-press Home
       leaves the app, playback stops, position saved
-- [ ] Leave the cube on the Home screen 10+ min after watching: no video
-      chrome burn-in artifacts (AmoledProtection shifts applied)
+- [ ] Chrome auto-hides within ~4 s in all states (playing and paused); leave
+      the cube on Home 10+ min after watching: no chrome burn-in artifacts
+- [ ] Screen stays lit for a full episode with no touches (keepAwake path);
+      pausing lets it dim/blank normally
+- [ ] Tapping a corrupt/truncated .lcv shows its specific refusal reason as a
+      toast

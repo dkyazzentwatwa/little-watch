@@ -75,7 +75,7 @@ codec + I2S + amp:
 
 ```cpp
 bool     beginPcmStream(uint32_t sampleRate, uint8_t channels);
-size_t   writePcm(const int16_t* samples, size_t count, uint32_t timeoutMs);
+size_t   writePcm(const int16_t* samples, size_t count);
 uint32_t pcmSamplesPlayed() const;   // 32-bit: atomic cross-task read
 void     endPcmStream();
 ```
@@ -185,8 +185,10 @@ off size field                off size field
 - Card yanked mid-play → reader task flags the failed read and exits via its
   semaphore; loop task stops playback, calls `endPcmStream()`, shows
   `RemovedUnexpectedly`. Mirrors `abandonRecording()`.
-- Bad/oversized frame chunk → skip, hold previous frame, count it; abort with
-  a message after N (≈15) consecutive failures.
+- Corrupt container chunk (bad type/size) → playback stops with a specific
+  reason (a lying chunk size means the stream is desynced; skipping by it
+  would be meaningless). Bad JPEG payloads skip + hold the previous frame,
+  aborting after ~15 consecutive.
 - Recording active → refuse to start ("recording in progress").
 - Battery < 10 % → warning screen before starting ("~½ episode per charge").
 - Resume record for a deleted file → dropped silently on next library scan.

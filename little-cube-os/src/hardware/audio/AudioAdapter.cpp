@@ -851,6 +851,12 @@ size_t AudioAdapter::writePcm(const int16_t* samples, size_t count) {
       stereo[2 * i] = samples[done + i];
       stereo[2 * i + 1] = samples[done + i];
     }
+    // Return value deliberately unchecked, matching every other i2s.write()
+    // call in this file. Unlike those, this path is video's A/V master
+    // clock (VideoPlayer::clockSamples() trusts pcmSamples_ to mean "samples
+    // actually handed to the DMA"): a chronically short write here would
+    // desync the clock silently rather than just drop audio. Revisit if
+    // lip-sync drifts on hardware.
     i2s.write(reinterpret_cast<uint8_t*>(stereo), n * 2 * sizeof(int16_t));
     pcmSamples_ += n;
     done += n;

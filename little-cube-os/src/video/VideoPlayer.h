@@ -90,6 +90,10 @@ class VideoPlayer {
 
   // I2S depth estimate; tune on device via the lip-sync item in
   // docs/hardware-validation.md §Video (lands with the final plan task).
+  // INVARIANT: must stay <= kRingSlots * (audioRateHz / fps) (= 5880 at 4
+  // slots, 22050/15) — above that the reader parks on a full ring before the
+  // clock can reach the tail frame and playback hard-stalls. Raise
+  // kRingSlots (power dividing 256) before raising this.
   static constexpr uint32_t kDmaDepthSamples = 4096;
   static constexpr uint8_t kMaxConsecutiveBad = 15;
 

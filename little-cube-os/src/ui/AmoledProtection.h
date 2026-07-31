@@ -30,6 +30,13 @@ class AmoledProtection {
   // clearing it, which is what let wake taps leak through before.
   bool onActivity();
 
+  // Reset the idle clock without an input event, waking a dim/dark panel.
+  // Called per-frame by video playback (spec §37 exemption: full-motion
+  // content is burn-in-safe, but the idle clock cannot see it). Paused or
+  // backgrounded playback deliberately does NOT call this — a frozen frame
+  // is static content and dims/blanks normally.
+  void keepAwake();
+
   // Diagnostics only — never branch the input drain on this. By the time it
   // can be read, onActivity() has already decided.
   bool screenOff() const { return state_ == State::Off; }

@@ -31,9 +31,9 @@ configuration.
 
 ```text
 little-cube-os/        Arduino sketch and firmware
-little-cube-os/src/    core, hardware, services, storage, serial, UI, apps
+little-cube-os/src/    core, hardware, services, storage, serial, UI, apps, video
 libraries/             vendored Arduino_DriveBus touch library
-scripts/               setup, build, upload, and monitor helpers
+scripts/               setup, build, upload, monitor, and pack-video.sh helpers
 docs/                  product contract, interfaces, designs, and validation
 dist/                  generated build output
 ```

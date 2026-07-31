@@ -5,8 +5,8 @@
 #include <Arduino_GFX_Library.h>
 
 #include "../core/SystemState.h"
-#include "../hardware/BatteryAdapter.h"
 #include "../hardware/DisplayAdapter.h"
+#include "../hardware/SdCardState.h"
 #include "../hardware/audio/AudioAdapter.h"
 #include "../storage/StoragePaths.h"
 #include "../ui/AmoledProtection.h"
@@ -148,11 +148,16 @@ void VideoApp::openItem(size_t index) {
 
 void VideoApp::beginPlayback(uint32_t startMs) {
   nextQueued_ = false;
-  char why[48];
+  char why[48] = "player unavailable";
   VideoPlayer* player = services_.videoPlayer;
   if (player == nullptr || !player->play(pendingPath_, startMs, why, sizeof(why))) {
-    widgets::toast(*services_.display->canvas(), why);
-    services_.display->markDirty();
+    // A one-shot widgets::toast() draws once and is gone the next frame the
+    // library redraws for any other reason — unreadable in practice. Hold
+    // the reason in state instead and let renderLibrary() draw it every
+    // frame until it expires (FilesApp's toast_/toastMs_ pattern).
+    strncpy(toast_, why, sizeof(toast_) - 1);
+    toast_[sizeof(toast_) - 1] = '\0';
+    toastMs_ = kToastMs;
     screen_ = Screen::Library;
     dirty_ = true;
     return;
@@ -172,8 +177,20 @@ void VideoApp::beginPlayback(uint32_t startMs) {
 }
 
 void VideoApp::update(uint32_t deltaMs) {
+  if (toastMs_ > 0) {
+    toastMs_ = deltaMs >= toastMs_ ? 0 : toastMs_ - deltaMs;
+    if (toastMs_ == 0) {
+      toast_[0] = '\0';
+      dirty_ = true;
+    }
+  }
   VideoPlayer* player = services_.videoPlayer;
-  if (screen_ == Screen::Library) {
+  if (screen_ != Screen::Player) {
+    // Covers Library AND ConfirmStart: a serial `video play` landing while
+    // this app is sitting on the resume/battery modal for a different file
+    // adopts that new playback. pendingPath_/pendingResumeMs_ get overwritten
+    // by adoptExternalPlayback() — the modal the user was looking at is just
+    // gone, same as if they had answered it.
     adoptExternalPlayback();  // serial play while we were already open
   }
   if (screen_ != Screen::Player || player == nullptr) {
@@ -187,11 +204,21 @@ void VideoApp::update(uint32_t deltaMs) {
       services_.video->savePosition(player->path(), player->positionMs(),
                                     player->durationMs());
     }
+    // spec §37 exemption: full-motion video is burn-in-safe, so hold the
+    // panel awake for as long as it is actually moving. A paused frozen
+    // frame is static content and must NOT do this — it dims/blanks like
+    // anything else.
+    services_.amoled->keepAwake();
   }
-  // Chrome auto-hide.
+  // Chrome auto-hide: static chrome exposure is bounded to ~4 s in every
+  // state, playing or paused — a paused player's chrome comes back with a
+  // tap like everything else. It used to stay pinned open while paused,
+  // which is exactly the unbounded static content spec §37 forbids; the
+  // paused frozen frame underneath it is protected the ordinary way, by
+  // dim/blank, since keepAwake() is only called while actively playing.
   if (chromeVisible_) {
     chromeMs_ += deltaMs;
-    if (chromeMs_ >= kChromeHideMs && player->playing() && !player->paused()) {
+    if (chromeMs_ >= kChromeHideMs) {
       chromeVisible_ = false;
       chromeDirty_ = true;
     }
@@ -207,6 +234,9 @@ void VideoApp::update(uint32_t deltaMs) {
   // Natural end -> auto-advance; user stop -> library. (Queue rule: only a
   // completed episode advances, mirroring lastPlayCompleted() semantics.)
   const bool playingNow = player->playing();
+  if (playingNow) {
+    lastKnownPosMs_ = player->positionMs();
+  }
   if (wasPlaying_ && !playingNow) {
     if (nextQueued_) {
       // Task 10's prev/next chrome buttons stop the current file and set
@@ -227,6 +257,13 @@ void VideoApp::update(uint32_t deltaMs) {
         wasPlaying_ = player->playing();
         return;
       }
+    } else {
+      // A stop that didn't come through this app's own stopAndSavePosition()
+      // (serial `video stop`, a card yank, kMaxConsecutiveBad) — nothing else
+      // saved on the way out. player->positionMs() already reads 0 here
+      // (state_ is Idle by this tick), so save the last position observed
+      // while still playing instead.
+      services_.video->savePosition(pendingPath_, lastKnownPosMs_, player->durationMs());
     }
     screen_ = Screen::Library;
     refreshList();
@@ -275,32 +312,48 @@ void VideoApp::renderLibrary(Arduino_GFX& gfx) {
   int16_t y = widgets::header(gfx, atRoot ? "Video" : (slash ? slash + 1 : dir_),
                               services_.amoled->shiftX(), services_.amoled->shiftY());
   if (itemCount_ == 0) {
-    widgets::textBlock(gfx, theme::kPadding, y + theme::kPadding,
-                       DISPLAY_WIDTH - 2 * theme::kPadding,
-                       "No episodes.\n\nPack one on the Mac:\n"
-                       "./scripts/pack-video.sh show.mkv\n"
-                       "then copy the .lcv to\n/littlecube/video/ on the card.",
-                       widgets::TextStyle::Body, theme::kTextDim);
-    return;
-  }
-  char sub[24];
-  for (size_t i = 0; i < itemCount_; i++) {
-    if (items_[i].isDir) {
-      snprintf(sub, sizeof(sub), "folder");
+    // Mirrors ReaderApp/NotesApp: an empty list can mean "no episodes" or
+    // "no readable card", and those are not the same message.
+    const SdCardState sd = services_.state->sd;
+    const bool readable = sd == SdCardState::Mounted || sd == SdCardState::ReadOnly ||
+                          sd == SdCardState::Full;
+    if (readable) {
+      widgets::textBlock(gfx, theme::kPadding, y + theme::kPadding,
+                         DISPLAY_WIDTH - 2 * theme::kPadding,
+                         "No episodes.\n\nPack one on the Mac:\n"
+                         "./scripts/pack-video.sh show.mkv\n"
+                         "then copy the .lcv to\n/littlecube/video/ on the card.",
+                         widgets::TextStyle::Body, theme::kTextDim);
     } else {
-      formatMs(items_[i].durationMs, sub, sizeof(sub));
+      char line[64];
+      snprintf(line, sizeof(line), "SD card: %s", sdCardStateName(sd));
+      widgets::textBlock(gfx, theme::kPadding, y + theme::kPadding,
+                         DISPLAY_WIDTH - 2 * theme::kPadding, line, widgets::TextStyle::Body,
+                         theme::kWarn);
     }
-    rowRects_[i] = widgets::listItem(gfx, theme::kPadding, y,
-                                     DISPLAY_WIDTH - 2 * theme::kPadding, items_[i].name,
-                                     sub, false);
-    y = rowRects_[i].y + rowRects_[i].h + 6;
+  } else {
+    char sub[24];
+    for (size_t i = 0; i < itemCount_; i++) {
+      if (items_[i].isDir) {
+        snprintf(sub, sizeof(sub), "folder");
+      } else {
+        formatMs(items_[i].durationMs, sub, sizeof(sub));
+      }
+      rowRects_[i] = widgets::listItem(gfx, theme::kPadding, y,
+                                       DISPLAY_WIDTH - 2 * theme::kPadding, items_[i].name,
+                                       sub, false);
+      y = rowRects_[i].y + rowRects_[i].h + 6;
+    }
+    if (totalItems_ > itemCount_) {
+      char more[32];
+      snprintf(more, sizeof(more), "+%u more — swipe up",
+               static_cast<unsigned>(totalItems_ - itemCount_));
+      widgets::textCentered(gfx, 0, y + 4, DISPLAY_WIDTH, more, widgets::TextStyle::Caption,
+                            theme::kTextDim);
+    }
   }
-  if (totalItems_ > itemCount_) {
-    char more[32];
-    snprintf(more, sizeof(more), "+%u more — swipe up",
-             static_cast<unsigned>(totalItems_ - itemCount_));
-    widgets::textCentered(gfx, 0, y + 4, DISPLAY_WIDTH, more, widgets::TextStyle::Caption,
-                          theme::kTextDim);
+  if (toastMs_ > 0 && toast_[0] != '\0') {
+    widgets::toast(gfx, toast_);
   }
 }
 
@@ -441,8 +494,16 @@ void VideoApp::renderChrome(Arduino_GFX& gfx) {
   char dur[16];
   formatMs(player->positionMs(), pos, sizeof(pos));
   formatMs(player->durationMs(), dur, sizeof(dur));
-  char times[36];
-  snprintf(times, sizeof(times), "%s / %s", pos, dur);
+  // Sized for %d's worst case (a full signed 32-bit range), not the ~0-100
+  // the field actually holds, so -Wformat-truncation has nothing to warn
+  // about — batteryPercent's declared type is a plain int with no compile-
+  // time-provable bound.
+  char batt[20] = "";
+  if (services_.state->batteryPercent >= 0) {
+    snprintf(batt, sizeof(batt), " · %d%%", services_.state->batteryPercent);
+  }
+  char times[64];
+  snprintf(times, sizeof(times), "%s / %s%s", pos, dur, batt);
   widgets::textCentered(c, sx, 6, sw, times, widgets::TextStyle::Caption, theme::kText);
   const int16_t barY = kChromeH - 18;
   c.fillRect(sx, barY, sw, 6, theme::kPanelAlt);

@@ -85,7 +85,8 @@ Layers under `little-cube-os/src/`:
 | `storage/` | `SdStorage` (path sanitizing, tree), `AtomicFile`, `StoragePaths` |
 | `serial/` | `SerialCommandService` dispatcher + `commands/` families |
 | `ui/` | `Theme`, `StatusBar`, `Carousel`, `AmoledProtection`, `widgets/` |
-| `apps/` | The 12 apps + `AppRegistry` |
+| `video/` | LcvReader container parsing + VideoPlayer engine |
+| `apps/` | The 16 apps + `AppRegistry` |
 
 Key contracts:
 

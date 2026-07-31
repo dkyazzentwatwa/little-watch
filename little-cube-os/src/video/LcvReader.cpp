@@ -173,12 +173,4 @@ bool LcvReader::readChunk(uint8_t* buf, uint32_t sizeBytes) {
   return pad == 0 || file_.seek(file_.position() + pad);
 }
 
-bool LcvReader::skipChunk(uint32_t sizeBytes) {
-  if (!file_) {
-    return false;
-  }
-  const uint32_t pad = (4 - (sizeBytes % 4)) % 4;
-  return file_.seek(file_.position() + sizeBytes + pad);
-}
-
 #endif  // FEATURE_VIDEO

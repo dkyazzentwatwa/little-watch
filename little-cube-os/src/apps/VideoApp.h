@@ -60,12 +60,18 @@ class VideoApp : public App {
   static constexpr uint32_t kChromeHideMs = 4000;
   static constexpr uint32_t kSaveEveryMs = 5000;
   static constexpr int32_t kSeekStepMs = 15000;
+  static constexpr uint32_t kToastMs = 2500;
 
   Services& services_;
   StatusBar statusBar_;
   Screen screen_ = Screen::Library;
   bool dirty_ = true;
   uint32_t lastStateVersion_ = 0xFFFFFFFF;
+
+  // Refusal-reason toast, shown over the library (mirrors FilesApp's
+  // toast_/toastMs_ pattern).
+  char toast_[48] = "";
+  uint32_t toastMs_ = 0;
 
   // Library, mirroring AudioApp's paging pattern.
   static constexpr size_t kMaxListed = 4;
@@ -94,6 +100,12 @@ class VideoApp : public App {
   uint32_t saveMs_ = 0;
   uint32_t posShownS_ = 0xFFFFFFFF;  // last second drawn, to redraw chrome 1 Hz
   bool wasPlaying_ = false;
+  // VideoPlayer::positionMs() reads 0 once state_ is Idle, and
+  // videoPlayer.update() runs before appRouter.update() in the kernel loop,
+  // so a stop can already be Idle by the tick update() observes the
+  // playing->idle edge. Refreshed every Player-screen tick while playing, so
+  // it always holds the last position seen before that happens.
+  uint32_t lastKnownPosMs_ = 0;
   // Set when the prev/next chrome button queues a sibling episode; consumed
   // by update()'s playing->idle edge (Task 10) to start it without waiting
   // for a natural end. Declared now so Task 10 only touches the .cpp.

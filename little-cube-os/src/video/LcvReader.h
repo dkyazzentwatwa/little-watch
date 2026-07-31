@@ -50,7 +50,6 @@ class LcvReader {
   // Read the current chunk payload into buf and skip the alignment padding.
   // sizeBytes must come from nextChunk(), which has already bounded it.
   bool readChunk(uint8_t* buf, uint32_t sizeBytes);
-  bool skipChunk(uint32_t sizeBytes);
   // True when the cursor reached indexOffset cleanly — the natural end.
   bool endOfData() const { return eof_; }
 

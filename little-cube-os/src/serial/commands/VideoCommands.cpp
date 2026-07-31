@@ -8,6 +8,7 @@
 #include "../../core/AppRouter.h"
 #include "../../core/Services.h"
 #include "../../services/VideoService.h"
+#include "../../storage/SdStorage.h"
 #include "../../storage/StoragePaths.h"
 #include "../../video/VideoPlayer.h"
 #include "../CmdArgs.h"
@@ -55,10 +56,22 @@ bool handleVideoCommand(Services& services, const char* verb, char* args) {
   if (strcmp(verb, "list") == 0) {
     char* cursor = args;
     const char* dir = cmdargs::nextToken(cursor);
+    // The default (paths::kVideo, when no argument is given) is already a
+    // trusted constant and needs no sanitizing; an explicit argument is
+    // arbitrary serial input like any other path and goes through the same
+    // gate the app and every other command family use.
+    String safeDir;
+    const char* useDir = paths::kVideo;
+    if (dir != nullptr) {
+      if (services.storage == nullptr || !services.storage->sanitizePath(dir, safeDir)) {
+        Serial.println("video: path refused");
+        return true;
+      }
+      useDir = safeDir.c_str();
+    }
     VideoInfo items[VideoService::kMaxListWindow];
     size_t total = 0;
-    const size_t n = video->list(dir != nullptr ? dir : paths::kVideo, items,
-                                  VideoService::kMaxListWindow, &total);
+    const size_t n = video->list(useDir, items, VideoService::kMaxListWindow, &total);
     for (size_t i = 0; i < n; i++) {
       if (items[i].isDir) {
         Serial.printf("  [dir]  %s\n", items[i].name);
@@ -86,6 +99,18 @@ bool handleVideoCommand(Services& services, const char* verb, char* args) {
     } else {
       snprintf(full, sizeof(full), "%s/%s", paths::kVideo, path);
     }
+    // Sanitize once, up front, and use the SAME sanitized string for both
+    // resumeMs() and play() below — resumeMs() has no sanitizing of its own,
+    // and keying it off an un-sanitized path while play() (which
+    // re-sanitizes internally — harmless) uses the sanitized one would let
+    // the two disagree on which file a resume record belongs to.
+    String safe;
+    if (services.storage == nullptr || !services.storage->sanitizePath(full, safe)) {
+      Serial.println("video: path refused");
+      return true;
+    }
+    strncpy(full, safe.c_str(), sizeof(full) - 1);
+    full[sizeof(full) - 1] = '\0';
     char why[48];
     if (!player->play(full, video->resumeMs(full), why, sizeof(why))) {
       Serial.printf("video: refused — %s\n", why);
@@ -103,16 +128,28 @@ bool handleVideoCommand(Services& services, const char* verb, char* args) {
     return true;
   }
   if (strcmp(verb, "pause") == 0) {
+    if (player->idle()) {
+      Serial.println("video: nothing playing");
+      return true;
+    }
     player->setPaused(true);
     Serial.println("video: paused");
     return true;
   }
   if (strcmp(verb, "resume") == 0) {
+    if (player->idle()) {
+      Serial.println("video: nothing playing");
+      return true;
+    }
     player->setPaused(false);
     Serial.println("video: resumed");
     return true;
   }
   if (strcmp(verb, "seek") == 0) {
+    if (player->idle()) {
+      Serial.println("video: nothing playing");
+      return true;
+    }
     char* cursor = args;
     const char* tok = cmdargs::nextToken(cursor);
     int32_t delta = 0;
@@ -125,6 +162,10 @@ bool handleVideoCommand(Services& services, const char* verb, char* args) {
     return true;
   }
   if (strcmp(verb, "stop") == 0) {
+    if (player->idle()) {
+      Serial.println("video: nothing playing");
+      return true;
+    }
     player->requestStop();
     Serial.println("video: stopping");
     return true;

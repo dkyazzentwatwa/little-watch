@@ -7,6 +7,8 @@
 #include <esp_heap_caps.h>
 #include <string.h>
 
+#include <new>
+
 #include "../board_config.h"
 #include "../hardware/DisplayAdapter.h"
 #include "../hardware/audio/AudioAdapter.h"
@@ -21,12 +23,18 @@ void reason(char* out, size_t len, const char* msg) {
   }
 }
 
-// File-scope by choice, not just size (~17.5 KB, .bss): reaching the display
-// from JPEGDEC's C-style draw callback needs either its pUser slot plus a
-// cast, or a global anchor — with a single kernel-owned VideoPlayer the
-// global (jpegTarget) is the simpler of the two. Decode runs on the loop
-// task only.
-JPEGDEC jpegDecoder;
+// File-scope by choice, not just size (~17.5 KB): reaching the display from
+// JPEGDEC's C-style draw callback needs either its pUser slot plus a cast, or
+// a global anchor — with a single kernel-owned VideoPlayer the global
+// (jpegTarget) is the simpler of the two. Decode runs on the loop task only.
+//
+// Allocated in MALLOC_CAP_INTERNAL by allocBuffers() and destroyed/freed by
+// freeBuffers() — per-playback, not for the app's lifetime, so the ~17.5 KB
+// of internal RAM is only held while a video is actually open. Internal RAM
+// is exactly what TLS handshakes (Wi-Fi, weather, etc.) compete for; see
+// AudioAdapter::releaseDriverIfIdle for the same trade made on the audio
+// side.
+JPEGDEC* jpegDecoder = nullptr;
 Arduino_GFX* jpegTarget = nullptr;
 
 int jpegDrawBlock(JPEGDRAW* d) {
@@ -120,6 +128,15 @@ bool VideoPlayer::allocBuffers() {
     freeBuffers();
     return false;
   }
+  // Internal RAM, not PSRAM: JPEGDEC's working state, not frame data. See the
+  // file-scope comment on jpegDecoder for why this is allocated here instead
+  // of living for the app's lifetime.
+  void* jpegMem = heap_caps_malloc(sizeof(JPEGDEC), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (jpegMem == nullptr) {
+    freeBuffers();
+    return false;
+  }
+  jpegDecoder = new (jpegMem) JPEGDEC();
   return true;
 }
 
@@ -131,6 +148,11 @@ void VideoPlayer::freeBuffers() {
   heap_caps_free(audioBuf_);
   audioBuf_ = nullptr;
   audioBufBytes_ = 0;
+  if (jpegDecoder != nullptr) {
+    jpegDecoder->~JPEGDEC();
+    heap_caps_free(jpegDecoder);
+    jpegDecoder = nullptr;
+  }
 }
 
 bool VideoPlayer::startTask(uint32_t startFrame) {
@@ -280,6 +302,10 @@ void VideoPlayer::finishPlayback() {
   reader_.close();
   freeBuffers();
   state_ = State::Idle;
+  // Defensive: nothing should still expect UI-driven decode once idle.
+  // beginPlayback()/adoptExternalPlayback() re-arm this via setUiActive(true)
+  // on the next play().
+  uiActive_ = false;
 }
 
 void VideoPlayer::consumeFrames() {
@@ -322,6 +348,9 @@ void VideoPlayer::consumeFrames() {
 }
 
 bool VideoPlayer::decodeFrame(uint8_t slot) {
+  if (jpegDecoder == nullptr) {
+    return false;  // buffers not (yet) allocated — should not happen while Playing
+  }
   Arduino_GFX* gfx = display_->canvas();
   if (gfx == nullptr) {
     return false;
@@ -330,15 +359,15 @@ bool VideoPlayer::decodeFrame(uint8_t slot) {
   // Frames are stored pre-rotated by the packer; center on the panel's
   // short axis.
   const int16_t offsetX = static_cast<int16_t>((DISPLAY_WIDTH - header_.width) / 2);
-  if (!jpegDecoder.openRAM(slots_[slot], static_cast<int>(slotBytes_[slot]),
-                           jpegDrawBlock)) {
+  if (!jpegDecoder->openRAM(slots_[slot], static_cast<int>(slotBytes_[slot]),
+                            jpegDrawBlock)) {
     return false;
   }
   // If colors come out wrong on device, switch to RGB565_BIG_ENDIAN — the
   // canvas framebuffer byte order is the only open question here.
-  jpegDecoder.setPixelType(RGB565_LITTLE_ENDIAN);
-  const int ok = jpegDecoder.decode(offsetX, 0, 0);
-  jpegDecoder.close();
+  jpegDecoder->setPixelType(RGB565_LITTLE_ENDIAN);
+  const int ok = jpegDecoder->decode(offsetX, 0, 0);
+  jpegDecoder->close();
   if (ok != 1) {
     return false;
   }

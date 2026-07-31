@@ -81,6 +81,17 @@ bool AmoledProtection::consumeShiftChanged() {
   return changed;
 }
 
+// Same wake path onActivity() takes from Off, minus the swallow-verdict
+// logic that only makes sense for a real input event. Safe to call every
+// frame: once state_ is Active the branch below is a no-op.
+void AmoledProtection::keepAwake() {
+  idleMs_ = 0;
+  if (state_ == State::Dim || state_ == State::Off) {
+    wake(false);
+    applyBrightness();
+  }
+}
+
 bool AmoledProtection::onActivity() {
   if (state_ == State::Off) {
     wake(false);
