@@ -637,6 +637,9 @@ bool AudioAdapter::playWavFile(const char* path) {
   if (recState_ != RecState::Idle || playState_ != PlayState::Idle || path == nullptr) {
     return false;  // sequential half-duplex only
   }
+  if (pcmActive_) {
+    return false;
+  }
   if (!ensureStarted(rate_)) {
     return false;
   }
@@ -659,6 +662,9 @@ bool AudioAdapter::playWavFile(const char* path) {
 bool AudioAdapter::playMusicFile(const char* path) {
   if (recState_ != RecState::Idle || playState_ != PlayState::Idle || path == nullptr) {
     return false;  // sequential half-duplex only
+  }
+  if (pcmActive_) {
+    return false;
   }
   strncpy(playPath_, path, sizeof(playPath_) - 1);
   playPath_[sizeof(playPath_) - 1] = '\0';
@@ -703,6 +709,9 @@ void AudioAdapter::noteRadioMetadata(const char* title) {
 bool AudioAdapter::playRadio(const char* url, const char* stationName) {
   if (recState_ != RecState::Idle || playState_ != PlayState::Idle || url == nullptr ||
       stationName == nullptr || url[0] == '\0' || stationName[0] == '\0') {
+    return false;
+  }
+  if (pcmActive_) {
     return false;
   }
   strncpy(radioUrl_, url, sizeof(radioUrl_) - 1);
@@ -803,8 +812,69 @@ void AudioAdapter::pausePlayback(bool paused) {
   }
 }
 
+// ---- Externally-fed PCM stream (video audio) --------------------------------
+
+bool AudioAdapter::beginPcmStream(uint32_t sampleRate, uint8_t channels) {
+  if (!ready_ || channels != 1) {
+    return false;
+  }
+  if (playState_ != PlayState::Idle || recState_ != RecState::Idle || pcmActive_) {
+    return false;
+  }
+  if (!ensureStarted(sampleRate)) {
+    return false;
+  }
+  setPa(true);
+  pcmSamples_ = 0;
+  pcmPaused_ = false;
+  pcmActive_ = true;
+  return true;
+}
+
+size_t AudioAdapter::writePcm(const int16_t* samples, size_t count) {
+  static constexpr size_t kChunkFrames = 256;
+  int16_t stereo[kChunkFrames * 2];
+  size_t done = 0;
+  while (done < count && pcmActive_) {
+    if (pcmPaused_) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
+    }
+    size_t n = count - done;
+    if (n > kChunkFrames) {
+      n = kChunkFrames;
+    }
+    for (size_t i = 0; i < n; i++) {
+      stereo[2 * i] = samples[done + i];
+      stereo[2 * i + 1] = samples[done + i];
+    }
+    i2s.write(reinterpret_cast<uint8_t*>(stereo), n * 2 * sizeof(int16_t));
+    pcmSamples_ += n;
+    done += n;
+  }
+  return done;
+}
+
+void AudioAdapter::pcmPause(bool paused) {
+  pcmPaused_ = paused;
+  if (started_) {
+    Es8311::mute(paused);  // loop task — same cross-thread I2C rule as pausePlayback()
+  }
+}
+
+void AudioAdapter::endPcmStream() {
+  // Flags only: writePcm unblocks on !pcmActive_, and the normal idle path
+  // in update() handles PA hold and I2S teardown. Leaving the codec muted
+  // after a paused end is harmless — setPa(true) in the next start unmutes.
+  pcmActive_ = false;
+  pcmPaused_ = false;
+}
+
 bool AudioAdapter::startRecordWav(const char* path, uint32_t sampleRate) {
   if (recState_ != RecState::Idle || playState_ != PlayState::Idle) {
+    return false;
+  }
+  if (pcmActive_) {
     return false;
   }
   // A recording always gets a cold codec/I2S initialization. This prevents a
@@ -929,7 +999,8 @@ void AudioAdapter::update(uint32_t deltaMs) {
     recState_ = RecState::Idle;
   }
 
-  if (pendingPlay_ && playState_ == PlayState::Idle && recState_ == RecState::Idle) {
+  if (pendingPlay_ && playState_ == PlayState::Idle && recState_ == RecState::Idle &&
+      !pcmActive_) {
     pendingPlay_ = false;
     if (pendingRadio_) {
       playRadio(pendingPath_, radioStation_);
@@ -941,7 +1012,7 @@ void AudioAdapter::update(uint32_t deltaMs) {
     pendingRadio_ = false;
   }
 
-  if (playState_ != PlayState::Idle || recState_ != RecState::Idle) {
+  if (playState_ != PlayState::Idle || recState_ != RecState::Idle || pcmActive_) {
     idleMs_ = 0;
     return;
   }

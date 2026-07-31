@@ -67,8 +67,8 @@ class AudioAdapter {
   // (the ES8311 shares the I2C bus with touch, so cross-thread writes race).
   void pausePlayback(bool paused);
   bool playbackPaused() const { return playPaused_; }
-  bool isPlaying() const { return playState_ != PlayState::Idle; }
-  bool playbackIdle() const { return playState_ == PlayState::Idle; }
+  bool isPlaying() const { return playState_ != PlayState::Idle || pcmActive_; }
+  bool playbackIdle() const { return playState_ == PlayState::Idle && !pcmActive_; }
   const char* playingPath() const { return playPath_; }
   bool isRadioPlaying() const { return radioPlaying_; }
   const char* radioStationName() const { return radioStation_; }
@@ -86,6 +86,27 @@ class AudioAdapter {
   // update(); good for music while reading / at bedtime.
   void setSleepTimerMinutes(uint32_t minutes);
   uint32_t sleepRemainingSec() const { return sleepRemainingMs_ / 1000; }
+
+  // ---- Externally-fed PCM stream (video audio) ----------------------------
+  // The caller (VideoPlayer's reader task) owns the source and pushes
+  // samples; this adapter owns only codec + I2S + amp. begin/end/pcmPause
+  // run on the LOOP TASK; writePcm runs on the caller's worker task.
+  // Gated like every playback path: begin refuses unless fully idle, and
+  // every other play/record start refuses while a stream is open
+  // (half-duplex preserved).
+  bool beginPcmStream(uint32_t sampleRate, uint8_t channels);
+  // Push mono s16 samples; expanded to the stereo slots I2S runs in. Blocks
+  // on DMA backpressure (that backpressure IS the ~370 ms audio buffer);
+  // returns early only when the stream is ended. NEVER call from the loop.
+  size_t writePcm(const int16_t* samples, size_t count);
+  // Total samples accepted so far — the A/V master clock. Reset by begin.
+  uint32_t pcmSamplesPlayed() const { return pcmSamples_; }
+  // Mutes the codec (instant silence regardless of DMA contents) and parks
+  // writePcm; the ~370 ms already in DMA drains muted and is not replayed.
+  void pcmPause(bool paused);
+  bool pcmPaused() const { return pcmPaused_; }
+  void endPcmStream();  // idempotent
+  bool pcmStreamActive() const { return pcmActive_; }
 
   // ---- Recording (path is the literal target, typically a .partial) -------
   bool startRecordWav(const char* path, uint32_t sampleRate);
@@ -166,6 +187,10 @@ class AudioAdapter {
   volatile uint16_t recordPeak_ = 0;
 
   volatile bool playCompleted_ = false;  // last play ended naturally, not stopped
+
+  volatile bool pcmActive_ = false;
+  volatile bool pcmPaused_ = false;
+  volatile uint32_t pcmSamples_ = 0;
 
   uint32_t sleepRemainingMs_ = 0;
 
