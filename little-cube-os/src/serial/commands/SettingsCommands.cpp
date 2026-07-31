@@ -106,9 +106,10 @@ void printValue(SettingsService& s, const char* key) {
   } else if (strcmp(key, "bedtimebrightness") == 0) {
     Serial.printf("%u\n", (unsigned)s.bedtimeBrightness());
   } else if (strcmp(key, "clockface") == 0) {
-    // No clockfaces::name() yet — Task 5 adds the renderers and the name
-    // lookup. Print the bare index rather than inventing a label.
-    Serial.printf("%u\n", (unsigned)s.clockFace());
+    // Index plus label, the same shape `theme` prints — the number is what
+    // gets set, the name is what the footer shows on the Clock screen.
+    Serial.printf("%u (%s)\n", (unsigned)s.clockFace(),
+                  clockfaces::name(static_cast<clockfaces::FaceId>(s.clockFace())));
   }
 }
 
@@ -166,7 +167,7 @@ void printSettingsHelp() {
   Serial.println("  bedtimestart       HH:MM   bedtimeend  HH:MM   (wraps midnight)");
   Serial.printf("  bedtimebrightness  %u-%u — a nightly ceiling, never a floor\n",
                 (unsigned)MIN_BRIGHTNESS, (unsigned)MAX_BRIGHTNESS);
-  Serial.printf("  clockface          0-%u — selects the Clock app face (Task 5)\n",
+  Serial.printf("  clockface          0-%u — Clock app face; tapping the screen cycles it too\n",
                 (unsigned)(clockfaces::kFaceCount - 1));
   Serial.println("  weather.city       town name, e.g. London — geocoded over Wi-Fi");
   Serial.println("the stored value is printed back after every set. Numeric ranges are");
@@ -358,8 +359,9 @@ bool handleSettingsCommand(Services& services, const char* verb, char* args) {
     }
 
     if (strcmp(key, "clockface") == 0) {
-      // No name lookup yet (Task 5 adds clockfaces::name()) — numeric index
-      // only, mirroring theme's numeric path without the name-matching leg.
+      // Numeric index only — theme's name-matching leg is not mirrored here
+      // because the face labels ("Big Eyes", "Mood Cube") contain spaces and
+      // rest() would have to be re-split to match them.
       long v = -1;
       if (!parseLong(value, v) || v < 0 || v >= clockfaces::kFaceCount) {
         Serial.printf("usage: settings set clockface <0-%u>\n",
