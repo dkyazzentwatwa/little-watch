@@ -19,15 +19,55 @@ namespace {
 
 // All tunables in one place (spec "Data flow"). Changing a model is a rebuild.
 constexpr const char* kSttModel = "gpt-4o-mini-transcribe";  // fallback: whisper-1
-constexpr const char* kChatModel = "gpt-4o-mini";
 constexpr const char* kTtsModel = "gpt-4o-mini-tts";
 constexpr const char* kTtsVoice = "alloy";
-constexpr const char* kSystemPrompt =
-    "You are the voice assistant inside a tiny desk cube. Answer in one to "
-    "three short spoken sentences. Plain text only: no markdown, no lists, "
-    "no emoji.";
+
+// Responses API (replaces Chat Completions). UNVERIFIED against a live spec —
+// these are constants precisely so a rejected request is a one-line fix and a
+// reflash rather than a code change.
+constexpr const char* kResponseModel = "gpt-5.6-luna";
+// Empty string omits the reasoning object entirely. "none" may not be a valid
+// effort for every model; if the API 400s on it, blank this.
+constexpr const char* kReasoningEffort = "none";
+// false omits the tools array entirely, reverting to a plain completion.
+constexpr bool kWebSearchEnabled = true;
+// The built-in tool's type string. Earlier previews spelled this
+// "web_search_preview"; if the API rejects it, try that.
+constexpr const char* kWebSearchTool = "web_search";
+
+// Sent as the request's `instructions` field: on the Responses API this
+// replaces the old system-role message, so no system entry goes in `input`.
+// Pure ASCII (it rides inside JSON), and the closing paragraph is the old
+// system prompt's rule — this is a TTS pipeline and markdown gets read aloud.
+constexpr const char* kInstructions =
+    "You are a concise voice assistant running on an ESP32-based device.\n"
+    "\n"
+    "Use web search only when the answer depends on current, changing, or "
+    "externally verifiable information, including: weather; news and recent "
+    "events; prices and product availability; schedules and event times; "
+    "sports scores, standings, and fixtures; current laws, rules, or "
+    "regulations; current company, product, or software information; travel "
+    "conditions; anything the user explicitly asks you to search or verify.\n"
+    "\n"
+    "Do not use web search for: casual conversation; jokes; timeless factual "
+    "questions; basic explanations; writing or rewriting; calculations; "
+    "device commands; questions that can be answered reliably from general "
+    "knowledge.\n"
+    "\n"
+    "Keep spoken responses concise and natural. Prefer one to three short "
+    "sentences unless the user asks for more detail. Do not read URLs or "
+    "citation metadata aloud.\n"
+    "\n"
+    "Plain text only: no markdown, no lists, no emoji.";
+
 constexpr int kMaxAnswerTokens = 220;
 constexpr uint32_t kHttpTimeoutMs = 30000;
+// Phase 2 only. A web-search-backed answer runs tool calls server-side before
+// the first byte arrives, which routinely outlasts a plain completion. STT and
+// TTS keep kHttpTimeoutMs: raising it globally would let a wedged upload or a
+// stalled audio stream hold the worker (and the UI's Thinking state) twice as
+// long for no gain. HTTPClient::setTimeout takes a uint16_t -> 65535 ms ceiling.
+constexpr uint32_t kResponsesTimeoutMs = 60000;
 
 constexpr const char* kAssistantDir = "/littlecube/assistant";
 constexpr const char* kQueryPath = "/littlecube/assistant/query.wav";
@@ -173,31 +213,42 @@ void assistantWorkerBody(AssistantService* self) {
     return;
   }
 
-  // Phase 2: chat completion with short history.
+  // Phase 2: Responses API with short history, optional built-in web search.
   if (!self->workerFailed_) {
     self->workerPhase_ = static_cast<uint8_t>(AssistantService::State::Thinking);
     JsonDocument req;
-    req["model"] = kChatModel;
-    req["max_tokens"] = kMaxAnswerTokens;
-    JsonArray msgs = req["messages"].to<JsonArray>();
-    JsonObject sys = msgs.add<JsonObject>();
-    sys["role"] = "system";
-    sys["content"] = kSystemPrompt;
+    req["model"] = kResponseModel;
+    // `instructions` carries the system prompt on this endpoint, so `input`
+    // holds conversation turns only — no system entry.
+    req["instructions"] = kInstructions;
+    req["max_output_tokens"] = kMaxAnswerTokens;
+    JsonArray input = req["input"].to<JsonArray>();
     for (uint8_t i = 0; i < self->historyCount_; i++) {
-      JsonObject u = msgs.add<JsonObject>();
+      JsonObject u = input.add<JsonObject>();
       u["role"] = "user";
       u["content"] = self->historySlot(i, 0);
-      JsonObject a = msgs.add<JsonObject>();
+      JsonObject a = input.add<JsonObject>();
       a["role"] = "assistant";
       a["content"] = self->historySlot(i, 1);
     }
-    JsonObject cur = msgs.add<JsonObject>();
+    JsonObject cur = input.add<JsonObject>();
     cur["role"] = "user";
     cur["content"] = self->transcript_;
+    // Both blocks below omit their key entirely when switched off — an empty
+    // tools array or a null reasoning object is not the same request.
+    if (kWebSearchEnabled) {
+      JsonObject tool = req["tools"].to<JsonArray>().add<JsonObject>();
+      tool["type"] = kWebSearchTool;
+      req["tool_choice"] = "auto";  // only meaningful alongside tools
+    }
+    if (kReasoningEffort[0] != '\0') {
+      req["reasoning"]["effort"] = kReasoningEffort;
+    }
     String body;
     serializeJson(req, body);
 
-    beginHttps(http, client, "https://api.openai.com/v1/chat/completions", key, false);
+    beginHttps(http, client, "https://api.openai.com/v1/responses", key, false);
+    http.setTimeout(kResponsesTimeoutMs);  // overrides beginHttps: see constant
     http.addHeader("Content-Type", "application/json");
     int code = http.POST(body);
     if (code < 0) {
@@ -207,22 +258,71 @@ void assistantWorkerBody(AssistantService* self) {
     if (code != 200) {
       char snip[48] = "";
       if (code > 0) snipBody(http, snip, sizeof(snip));
-      snprintf(self->lastError_, sizeof(self->lastError_), "chat %d %s", code, snip);
+      snprintf(self->lastError_, sizeof(self->lastError_), "responses %d %s", code, snip);
       self->workerFailed_ = true;
     } else {
+      // The filter is load-bearing: with web search on, the raw body carries
+      // search calls, queries and citation blocks, and parsing it whole
+      // exhausts RAM. It must keep the `type` discriminators or a
+      // web_search_call is indistinguishable from a message. In an array
+      // filter, element 0 applies to every element.
       JsonDocument filter;
-      filter["choices"][0]["message"]["content"] = true;
+      filter["output"][0]["type"] = true;
+      filter["output"][0]["content"][0]["type"] = true;
+      filter["output"][0]["content"][0]["text"] = true;
+      filter["error"] = true;  // a 200 can still carry a structured error
       JsonDocument doc;
       if (deserializeJson(doc, http.getString(),
                           DeserializationOption::Filter(filter)) !=
-              DeserializationError::Ok ||
-          !doc["choices"][0]["message"]["content"].is<const char*>()) {
-        snprintf(self->lastError_, sizeof(self->lastError_), "chat parse failed");
+          DeserializationError::Ok) {
+        snprintf(self->lastError_, sizeof(self->lastError_), "responses parse failed");
         self->workerFailed_ = true;
       } else {
-        strncpy(self->answer_, doc["choices"][0]["message"]["content"],
-                sizeof(self->answer_) - 1);
-        self->answer_[sizeof(self->answer_) - 1] = '\0';
+        // `output_text` is an SDK convenience and is NOT in the raw JSON: walk
+        // `output` ourselves. Message items are interleaved with
+        // web_search_call items, and a message may hold several text parts.
+        size_t used = 0;
+        self->answer_[0] = '\0';
+        for (JsonObjectConst item : doc["output"].as<JsonArrayConst>()) {
+          if (used >= sizeof(self->answer_) - 1) {
+            break;
+          }
+          const char* itemType = item["type"];
+          if (itemType == nullptr || strcmp(itemType, "message") != 0) {
+            continue;  // web_search_call, reasoning, anything else
+          }
+          for (JsonObjectConst part : item["content"].as<JsonArrayConst>()) {
+            const char* partType = part["type"];
+            if (partType == nullptr || strcmp(partType, "output_text") != 0) {
+              continue;  // refusal, annotations-only part, ...
+            }
+            const char* text = part["text"];
+            if (text == nullptr) {
+              continue;
+            }
+            const size_t room = sizeof(self->answer_) - 1 - used;
+            if (room == 0) {
+              break;
+            }
+            const size_t n = strnlen(text, room);
+            memcpy(self->answer_ + used, text, n);
+            used += n;
+            self->answer_[used] = '\0';
+          }
+        }
+        if (used == 0) {
+          // Deliberately distinct from "responses parse failed": well-formed
+          // JSON with no assistant text is a different bug from malformed
+          // JSON, and this is the only diagnostic the field gets.
+          const char* apiError = doc["error"]["message"];
+          if (apiError != nullptr) {
+            snprintf(self->lastError_, sizeof(self->lastError_), "responses error: %s",
+                     apiError);
+          } else {
+            snprintf(self->lastError_, sizeof(self->lastError_), "no answer in response");
+          }
+          self->workerFailed_ = true;
+        }
       }
     }
     http.end();
