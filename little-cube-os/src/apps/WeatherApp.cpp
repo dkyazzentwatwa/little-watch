@@ -130,12 +130,6 @@ void fitMono(const char* src, char* out, size_t outLen, size_t maxChars) {
   strcat(out, "...");
 }
 
-// lroundf, not the (int)(v + 0.5f) idiom this file used to carry: that rounds
-// -3.4 to -2, which puts the wrong number on a freezing day.
-int roundC(float c) {
-  return static_cast<int>(lroundf(c));
-}
-
 // Draws one weatherart block, top-left at (x, y). Returns nothing: the block
 // is exactly kCols x kRows cells by contract (static_assert in
 // WeatherArt.cpp), so the caller already knows its extent.

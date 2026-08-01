@@ -167,10 +167,6 @@ void fitMono(const char* src, char* out, size_t outLen, size_t maxChars) {
   strcat(out, "...");
 }
 
-// lroundf, not (int)(v + 0.5f): that rounds -3.4 to -2, which puts the wrong
-// number on a freezing day.
-int roundC(float c) { return static_cast<int>(lroundf(c)); }
-
 const char* kWeekdaysShort[7] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
 const char* kMonthsShort[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};

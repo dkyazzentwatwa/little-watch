@@ -74,7 +74,7 @@ const char* glanceFor(AppId id, Services& services, char* buf, size_t cap) {
       if (!w.valid) {
         return state != nullptr && state->internet ? "fetching..." : "offline";
       }
-      snprintf(buf, cap, "%d°C · %s", static_cast<int>(w.temperatureC + 0.5f), w.condition);
+      snprintf(buf, cap, "%d°C · %s", roundC(w.temperatureC), w.condition);
       return buf;
     }
 
