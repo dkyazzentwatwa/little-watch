@@ -275,15 +275,19 @@ Rect listItem(Arduino_GFX& gfx, int16_t x, int16_t y, int16_t w, const char* pri
   return Rect{x, y, w, h};
 }
 
-int16_t textBlock(Arduino_GFX& gfx, int16_t x, int16_t y, int16_t w, const char* body,
-                  TextStyle style, uint16_t color, uint8_t maxLines) {
-  if (body == nullptr || w <= 0) {
-    return y;
-  }
-  // Greedy wrap measured against real glyph widths — proportional faces break
-  // the fixed-cell "chars per line" arithmetic the uint8_t overload uses.
+namespace {
+
+// Shared wrap walker. Draws when `draw` is true; always returns the number of
+// characters consumed. Pagination and rendering MUST go through this one
+// function — two independent wrappers drift and drop lines at page edges.
+//
+// Greedy wrap measured against real glyph widths — proportional faces break
+// the fixed-cell "chars per line" arithmetic the uint8_t overload uses.
+size_t wrapWalk(Arduino_GFX& gfx, const char* text, int16_t x, int16_t y, int16_t w,
+                TextStyle style, uint16_t color, uint8_t maxLines, bool draw,
+                int16_t* yOut) {
   const int16_t lineH = lineHeight(style);
-  const size_t len = strlen(body);
+  const size_t len = strlen(text);
   size_t pos = 0;
   uint8_t drawn = 0;
   char line[128];
@@ -292,42 +296,69 @@ int16_t textBlock(Arduino_GFX& gfx, int16_t x, int16_t y, int16_t w, const char*
     size_t take = 0;
     size_t lastSpace = 0;
     size_t fits = 0;
-    while (pos + take < len && body[pos + take] != '\n' && take < sizeof(line) - 1) {
+    while (pos + take < len && text[pos + take] != '\n' && take < sizeof(line) - 1) {
       take++;
-      memcpy(line, body + pos, take);
+      memcpy(line, text + pos, take);
       line[take] = '\0';
       if (textWidth(gfx, line, style) > w) {
         break;
       }
       fits = take;
-      if (body[pos + take] == ' ') {
+      if (text[pos + take] == ' ') {
         lastSpace = take;
       }
     }
     // Prefer a word break, but never stall: a single word wider than w is cut.
     size_t lineLen = fits;
-    if (pos + fits < len && body[pos + fits] != '\n' && body[pos + fits] != ' ' &&
+    if (pos + fits < len && text[pos + fits] != '\n' && text[pos + fits] != ' ' &&
         lastSpace > 0) {
       lineLen = lastSpace;
     }
     if (lineLen == 0) {
       lineLen = fits > 0 ? fits : 1;
     }
-    memcpy(line, body + pos, lineLen);
-    line[lineLen] = '\0';
-    text(gfx, x, y, line, style, color);
+    if (draw) {
+      memcpy(line, text + pos, lineLen);
+      line[lineLen] = '\0';
+      // Qualified: `text` is this function's parameter, which shadows the
+      // widgets::text() draw helper.
+      widgets::text(gfx, x, y, line, style, color);
+    }
     y += lineH;
     drawn++;
 
     pos += lineLen;
-    while (pos < len && body[pos] == ' ') {
+    while (pos < len && text[pos] == ' ') {
       pos++;
     }
-    if (pos < len && body[pos] == '\n') {
+    if (pos < len && text[pos] == '\n') {
       pos++;
     }
   }
-  return y;
+  if (yOut != nullptr) {
+    *yOut = y;
+  }
+  return pos;
+}
+
+}  // namespace
+
+int16_t textBlock(Arduino_GFX& gfx, int16_t x, int16_t y, int16_t w, const char* body,
+                  TextStyle style, uint16_t color, uint8_t maxLines) {
+  if (body == nullptr || w <= 0) {
+    return y;
+  }
+  int16_t endY = y;
+  wrapWalk(gfx, body, x, y, w, style, color, maxLines, true, &endY);
+  return endY;
+}
+
+size_t measureBlock(Arduino_GFX& gfx, const char* text, int16_t w, TextStyle style,
+                    uint8_t maxLines) {
+  if (text == nullptr || w <= 0) {
+    return 0;
+  }
+  return wrapWalk(gfx, text, 0, 0, w, style, 0, maxLines, false, nullptr);
 }
 
 void textBlock(Arduino_GFX& gfx, int16_t x, int16_t y, int16_t w, const char* text,

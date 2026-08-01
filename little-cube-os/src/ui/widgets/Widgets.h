@@ -91,6 +91,13 @@ int16_t textBlock(Arduino_GFX& gfx, int16_t x, int16_t y, int16_t w, const char*
                   TextStyle style, uint16_t color, uint8_t maxLines = 255);
 void textBlock(Arduino_GFX& gfx, int16_t x, int16_t y, int16_t w, const char* text,
                uint8_t textSize, uint16_t color);
+// How many characters of `text` a textBlock() of the same width, style and
+// line cap would consume. Shares textBlock's walker, so the two can never
+// disagree about where a page ends. Draws nothing; the returned offset is the
+// resume point for the next page (leading spaces and one newline already
+// skipped, exactly as the drawing pass skips them).
+size_t measureBlock(Arduino_GFX& gfx, const char* text, int16_t w, TextStyle style,
+                    uint8_t maxLines);
 void card(Arduino_GFX& gfx, int16_t x, int16_t y, int16_t w, int16_t h);
 void toast(Arduino_GFX& gfx, const char* message);
 Rect modalConfirm(Arduino_GFX& gfx, const char* title, const char* body, Rect& cancelOut);
