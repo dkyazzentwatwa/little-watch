@@ -11,12 +11,94 @@
 #include "../ui/Theme.h"
 
 namespace {
-constexpr int16_t kTop = theme::kStatusBarHeight + 12;
+// widgets::header() returns theme::kStatusBarHeight + 10 + cap(Title) + 10 + 12
+// with shiftY folded in. cap(FreeSansBold18pt, "H") is 25, so the unshifted
+// value is 85. render() lays out from the real return value; this constant only
+// feeds rowsThatFit(), which needs a BUDGET (a difference), so the burn-in
+// shift cancels and a pixel of drift here costs nothing.
+constexpr int16_t kContentTop = 85;
+
+// Offsets from the content top. The transport is taller mid-take, so the list
+// starts lower then.
+constexpr int16_t kRecordDy = 30;   // record/stop button top
+constexpr int16_t kRecordH = 64;
+constexpr int16_t kPauseDy = 102;   // pause/resume button top (recording only)
+constexpr int16_t kPauseH = 52;
+constexpr int16_t kHintDyIdle = 102;
+constexpr int16_t kHintDyRec = 164;
+constexpr int16_t kListDyIdle = 126;
+constexpr int16_t kListDyRec = 186;
+
 constexpr int16_t kRowHeight = 60;
-constexpr int16_t kFooterHeight = 30;
+// widgets::footer() puts its rule at DISPLAY_HEIGHT - 44 and its caption below
+// that, so the reserved band is 44 plus a little clearance — the old 30 was
+// sized for the -28 footers and would have let the last row draw over the rule.
+constexpr int16_t kFooterHeight = 48;
+
+// The delete button hangs off the SAFE area, not the raw panel edge: at
+// kPadding it sat 12 px from the glass and crowded the name beside it.
+constexpr int16_t kDeleteW = 44;
+constexpr int16_t kDeleteH = 40;
+constexpr int16_t kDeleteX = DISPLAY_WIDTH - theme::kSafeInset - kDeleteW;  // 304
+constexpr int16_t kRowGap = 8;
+constexpr int16_t kRowW = kDeleteX - kRowGap - theme::kPadding;  // 284
+// widgets::listItem() insets its text by 10 on each side and does NOT clip.
+constexpr int16_t kRowTextW = kRowW - 20;
+
+// Red dot + gap that precedes "REC". Centring the text inside a box inset by
+// the cluster width centres the WHOLE composite (see render()).
+constexpr int16_t kDotR = 12;
+constexpr int16_t kDotGap = 12;
+constexpr int16_t kDotCluster = 2 * kDotR + kDotGap;
 
 // Where the recordings list starts, below the transport controls.
-int16_t listTop(bool recording) { return kTop + (recording ? 218 : 160) + 28; }
+int16_t listTop(bool recording) {
+  return kContentTop + (recording ? kListDyRec : kListDyIdle);
+}
+
+// "~16274 min left on card" both overran the line and was unreadable as a
+// quantity. Largest sensible unit instead.
+void formatRemaining(uint32_t seconds, char* out, size_t outLen) {
+  const uint32_t minutes = seconds / 60;
+  if (minutes >= 48 * 60) {
+    snprintf(out, outLen, "~%lu days left", (unsigned long)(minutes / (24 * 60)));
+  } else if (minutes >= 90) {
+    snprintf(out, outLen, "~%lu h left", (unsigned long)(minutes / 60));
+  } else {
+    snprintf(out, outLen, "~%lu min left", (unsigned long)minutes);
+  }
+}
+
+// Row label: drop the uniform ".wav" (23 chars of REC_YYYYMMDD_HHMMSS.wav
+// measure 303 px at Body against 264 px of row, and listItem does not clip),
+// then ellipsize anything still too wide. Pure measurement — no I/O — so this
+// is safe on the render path.
+void rowLabel(Arduino_GFX& gfx, const char* name, int16_t maxW, char* out, size_t outLen) {
+  size_t len = strlen(name);
+  if (len > 4 && name[len - 4] == '.' && tolower(name[len - 3]) == 'w' &&
+      tolower(name[len - 2]) == 'a' && tolower(name[len - 1]) == 'v') {
+    len -= 4;
+  }
+  if (len > outLen - 1) {
+    len = outLen - 1;
+  }
+  memcpy(out, name, len);
+  out[len] = '\0';
+  if (widgets::textWidth(gfx, out, widgets::TextStyle::Body) <= maxW) {
+    return;
+  }
+  while (len > 0) {
+    len--;
+    out[len] = '\0';
+    if (len + 4 <= outLen) {
+      strcat(out, "...");
+      if (widgets::textWidth(gfx, out, widgets::TextStyle::Body) <= maxW) {
+        return;
+      }
+      out[len] = '\0';
+    }
+  }
+}
 }  // namespace
 
 void RecorderApp::onOpen() {
@@ -128,69 +210,75 @@ void RecorderApp::render() {
     return;
   }
   Arduino_GFX& gfx = *display->canvas();
+  const int16_t sx = services_.amoled->shiftX();
+  const int16_t sy = services_.amoled->shiftY();
   gfx.fillScreen(theme::kBg);
-  statusBar_.render(gfx, state, services_.amoled->shiftX(),
-                    services_.amoled->shiftY());
+  statusBar_.render(gfx, state, sx, sy);
 
   RecorderService* rec = services_.recorder;
   const bool recording = rec != nullptr && rec->recording();
 
-  gfx.setTextSize(theme::kTextSizeBody);
-  gfx.setTextColor(theme::kText);
-  gfx.setCursor(theme::kPadding, kTop);
-  gfx.print("Recorder");
+  // Hacker framing (rule + footer) around proportional body type: filenames and
+  // durations are read and acted on, so they stay in the TextStyle faces rather
+  // than the monospace ASCII the glance screens use.
+  const int16_t contentTop = widgets::header(gfx, "Recorder", sx, sy);
+  const int16_t bodyCap = widgets::ascent(gfx, widgets::TextStyle::Body);
 
-  // Elapsed / remaining line.
+  // Elapsed / remaining line. No middot: the Free* faces are ASCII 0x20-0x7E,
+  // so the old "ready · ..." separator rendered as a stray glyph on the panel.
   char line[64];
-  gfx.setTextSize(theme::kTextSizeSmall);
+  uint16_t lineInk;
   if (recording) {
     const uint32_t sec = rec->elapsedMs() / 1000;
     snprintf(line, sizeof(line), "%s %02lu:%02lu", rec->paused() ? "paused" : "recording",
              (unsigned long)(sec / 60), (unsigned long)(sec % 60));
-    gfx.setTextColor(rec->paused() ? theme::kWarn : theme::kBad);
+    lineInk = rec->paused() ? theme::kWarn : theme::kBad;
   } else if (services_.sdCard != nullptr && services_.sdCard->writable()) {
-    const uint32_t remain = rec != nullptr ? rec->estimatedRemainingSec() : 0;
-    snprintf(line, sizeof(line), "ready · ~%lu min left on card",
-             (unsigned long)(remain / 60));
-    gfx.setTextColor(theme::kTextDim);
+    char remain[32];
+    formatRemaining(rec != nullptr ? rec->estimatedRemainingSec() : 0, remain, sizeof(remain));
+    snprintf(line, sizeof(line), "ready - %s", remain);
+    lineInk = theme::kTextDim;
   } else {
+    // Always the SPECIFIC state, never a generic error — and this branch is
+    // also the no-card-at-all render.
     snprintf(line, sizeof(line), "SD card %s",
              services_.sdCard != nullptr ? sdCardStateName(services_.sdCard->state()) : "?");
-    gfx.setTextColor(theme::kWarn);
+    lineInk = theme::kWarn;
   }
-  gfx.setCursor(theme::kPadding, kTop + 36);
-  gfx.print(line);
+  widgets::text(gfx, theme::kPadding + sx, contentTop, line, widgets::TextStyle::Body, lineInk);
 
   // Big record / stop control (always a visible button, never gesture-only).
   const int16_t w = DISPLAY_WIDTH - 2 * theme::kPadding;
-  recordRect_ = widgets::Rect{theme::kPadding, kTop + 66, w, 72};
+  const int16_t labelTop = contentTop + kRecordDy + (kRecordH - bodyCap) / 2;
+  recordRect_ = widgets::Rect{static_cast<int16_t>(theme::kPadding + sx),
+                              static_cast<int16_t>(contentTop + kRecordDy), w, kRecordH};
   if (recording) {
     gfx.fillRoundRect(recordRect_.x, recordRect_.y, recordRect_.w, recordRect_.h, 12,
                       theme::kBad);
-    gfx.setTextSize(theme::kTextSizeBody);
-    gfx.setTextColor(theme::kBg);
-    gfx.setCursor(recordRect_.x + w / 2 - 36, recordRect_.y + 26);
-    gfx.print("STOP");
-    pauseRect_ = widgets::button(gfx, theme::kPadding, kTop + 150, w, 52,
+    widgets::textCentered(gfx, recordRect_.x, labelTop, w, "STOP", widgets::TextStyle::Body,
+                          theme::kBg);
+    pauseRect_ = widgets::button(gfx, theme::kPadding + sx, contentTop + kPauseDy, w, kPauseH,
                                  rec->paused() ? "resume" : "pause", false);
   } else {
     gfx.fillRoundRect(recordRect_.x, recordRect_.y, recordRect_.w, recordRect_.h, 12,
                       theme::kPanel);
-    gfx.fillCircle(recordRect_.x + w / 2 - 52, recordRect_.y + 36, 12, theme::kBad);
-    gfx.setTextSize(theme::kTextSizeBody);
-    gfx.setTextColor(theme::kText);
-    gfx.setCursor(recordRect_.x + w / 2 - 28, recordRect_.y + 26);
-    gfx.print("REC");
+    // The red dot is the only colour cue separating "start" from "stop", so it
+    // stays. Centring "REC" inside a box inset by the dot cluster puts the
+    // composite (dot + gap + ink) dead centre — no hardcoded pixel offset.
+    const int16_t labelW = widgets::textWidth(gfx, "REC", widgets::TextStyle::Body);
+    const int16_t inkX = recordRect_.x + kDotCluster + (w - kDotCluster - labelW) / 2;
+    gfx.fillCircle(inkX - kDotGap - kDotR, recordRect_.y + kRecordH / 2, kDotR, theme::kBad);
+    widgets::textCentered(gfx, recordRect_.x + kDotCluster, labelTop, w - kDotCluster, "REC",
+                          widgets::TextStyle::Body, theme::kText);
     pauseRect_ = widgets::Rect{};
   }
 
   // Recordings, newest first.
-  int16_t y = kTop + (recording ? 218 : 160);
-  gfx.setTextSize(theme::kTextSizeSmall);
-  gfx.setTextColor(theme::kTextDim);
-  gfx.setCursor(theme::kPadding, y);
-  gfx.print(totalRecordings_ > 0 ? "newest first (tap = play)" : "no recordings yet");
-  y = listTop(recording);
+  widgets::text(gfx, theme::kPadding + sx,
+                contentTop + (recording ? kHintDyRec : kHintDyIdle),
+                totalRecordings_ > 0 ? "newest first (tap = play)" : "no recordings yet",
+                widgets::TextStyle::Caption, theme::kTextDim);
+  int16_t y = contentTop + (recording ? kListDyRec : kListDyIdle);
   for (size_t i = 0; i < kMaxListed; i++) {
     if (i >= recordingCount_) {
       rowRects_[i] = widgets::Rect{};
@@ -199,35 +287,41 @@ void RecorderApp::render() {
     }
     char secondary[32];
     snprintf(secondary, sizeof(secondary), "%u KB", (unsigned)(recordings_[i].sizeBytes / 1024));
-    rowRects_[i] = widgets::listItem(gfx, theme::kPadding, y, w - 56, recordings_[i].name,
-                                     secondary, false);
-    rowDeleteRects_[i] = widgets::Rect{static_cast<int16_t>(DISPLAY_WIDTH - theme::kPadding - 44),
-                                       static_cast<int16_t>(y + 6), 44, 40};
+    char label[sizeof(recordings_[i].name)];
+    rowLabel(gfx, recordings_[i].name, kRowTextW, label, sizeof(label));
+    rowRects_[i] = widgets::listItem(gfx, theme::kPadding + sx, y, kRowW, label, secondary,
+                                     false);
+    rowDeleteRects_[i] = widgets::Rect{static_cast<int16_t>(kDeleteX + sx),
+                                       static_cast<int16_t>(y + 6), kDeleteW, kDeleteH};
     gfx.drawRoundRect(rowDeleteRects_[i].x, rowDeleteRects_[i].y, rowDeleteRects_[i].w,
                       rowDeleteRects_[i].h, 6, theme::kBad);
-    gfx.setTextColor(theme::kBad);
-    gfx.setCursor(rowDeleteRects_[i].x + 12, rowDeleteRects_[i].y + 12);
-    gfx.print("x");
+    widgets::textCentered(gfx, rowDeleteRects_[i].x,
+                          static_cast<int16_t>(rowDeleteRects_[i].y + (kDeleteH - bodyCap) / 2),
+                          kDeleteW, "x", widgets::TextStyle::Body, theme::kBad);
     y += kRowHeight;
   }
 
   // Never claim the list is complete when it is not: the footer carries the
-  // true total and how to reach the rest.
+  // true total and how to reach the rest. Right wins the space and holds the
+  // action hint; left is the count and ellipsizes. kTextDim, not kPanelAlt —
+  // kPanelAlt is a fill colour (1.24-1.40:1 against kBg), never ink.
+  char count[40];
+  const char* pageHint = nullptr;
   if (totalRecordings_ > 0) {
     const size_t first = pageFirst_[page_] + 1;
-    char footer[48];
-    if (recordingCount_ > 0 && totalRecordings_ > recordingCount_) {
-      snprintf(footer, sizeof(footer), "%u-%u of %u · swipe up/down", (unsigned)first,
+    if (recordingCount_ > 0) {
+      snprintf(count, sizeof(count), "%u-%u of %u", (unsigned)first,
                (unsigned)(first + recordingCount_ - 1), (unsigned)totalRecordings_);
     } else {
-      snprintf(footer, sizeof(footer), "%u recording%s", (unsigned)totalRecordings_,
-               totalRecordings_ == 1 ? "" : "s");
+      snprintf(count, sizeof(count), "0 of %u", (unsigned)totalRecordings_);
     }
-    gfx.setTextSize(theme::kTextSizeSmall);
-    gfx.setTextColor(theme::kTextDim);
-    gfx.setCursor(theme::kPadding, DISPLAY_HEIGHT - 24);
-    gfx.print(footer);
+    if (page_ > 0 || totalRecordings_ > recordingCount_) {
+      pageHint = "swipe up/down";
+    }
+  } else {
+    snprintf(count, sizeof(count), "no recordings");
   }
+  widgets::footer(gfx, count, pageHint, sx, sy);
 
   if (confirmDelete_ && deleteIndex_ < recordingCount_) {
     confirmRect_ =
