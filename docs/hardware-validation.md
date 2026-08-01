@@ -360,7 +360,11 @@ Verified on device over serial, with a key configured and Wi-Fi up.
       (`assistant busy or no key`), not generically
 - [ ] `response too large` path — not reachable with real answers (~3-4 KB
       against a 64 KB buffer); contract-only
-- [ ] Spoken (microphone) path on the new endpoint — only the text path
-      (`assistant ask`) has been exercised
+- [x] Spoken (microphone) path works on the new endpoint — tap-talk-send
+      through STT, Responses and TTS (user-confirmed, 2026-08-01)
+- [ ] `store: false` actually suppresses server-side retention — the request
+      field is sent and the exchange still succeeds, but retention is
+      OpenAI-side and cannot be observed from the device. Confirm in the
+      platform dashboard if it matters.
 - [ ] Whether web search materially improves answer accuracy for current-events
       questions, vs the model answering from parametric knowledge

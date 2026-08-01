@@ -34,6 +34,16 @@ constexpr bool kWebSearchEnabled = true;
 // The built-in tool's type string. Earlier previews spelled this
 // "web_search_preview"; if the API rejects it, try that.
 constexpr const char* kWebSearchTool = "web_search";
+// The Responses API stores responses SERVER-SIDE BY DEFAULT. This is an
+// always-on device in someone's home that hears whatever is said near it, so
+// the default is wrong for it: every question and answer would be retained by
+// OpenAI. Sent explicitly rather than relied upon — a default that silently
+// flips is not something a privacy decision should rest on.
+//
+// This also means previous_response_id chaining is unavailable, which costs
+// nothing here: conversation history is replayed from the PSRAM slots in
+// `input` on every request, and it lives only while the app is open.
+constexpr bool kStoreResponses = false;
 
 // Sent as the request's `instructions` field: on the Responses API this
 // replaces the old system-role message, so no system entry goes in `input`.
@@ -285,6 +295,7 @@ void assistantWorkerBody(AssistantService* self) {
     // holds conversation turns only — no system entry.
     req["instructions"] = kInstructions;
     req["max_output_tokens"] = kMaxAnswerTokens;
+    req["store"] = kStoreResponses;  // opt out of server-side retention
     JsonArray input = req["input"].to<JsonArray>();
     for (uint8_t i = 0; i < self->historyCount_; i++) {
       JsonObject u = input.add<JsonObject>();
