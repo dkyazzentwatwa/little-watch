@@ -69,6 +69,14 @@ constexpr uint32_t kHttpTimeoutMs = 30000;
 // long for no gain. HTTPClient::setTimeout takes a uint16_t -> 65535 ms ceiling.
 constexpr uint32_t kResponsesTimeoutMs = 60000;
 
+// Phase 2's response body is sunk into this much PSRAM. Deliberately generous:
+// a plain completion is a couple of KB, but a web-search-backed answer carries
+// search calls, queries and citation blocks and runs far larger. PSRAM is 8 MB,
+// so the headroom is free — whereas internal RAM, which is what the old
+// getString() was consuming, is the thing that actually runs out on this board
+// (see the TLS fragmentation note above assistantWorkerBody).
+constexpr size_t kResponseBufferBytes = 64 * 1024;
+
 constexpr const char* kAssistantDir = "/littlecube/assistant";
 constexpr const char* kQueryPath = "/littlecube/assistant/query.wav";
 constexpr const char* kReplyPath = "/littlecube/assistant/reply.wav";
@@ -89,8 +97,63 @@ void beginHttps(HTTPClient& http, WiFiClientSecure& client, const char* url,
   http.addHeader("Authorization", String("Bearer ") + key);
 }
 
+// Write-only Stream over a caller-owned buffer, so HTTPClient::writeToStream()
+// can land a response body wherever we want it (here: PSRAM). Stream extends
+// Print, so the read half has to exist to satisfy the interface; nothing ever
+// calls it.
+//
+// It never writes past cap_, and it always REPORTS a full write even after
+// saturating. That second part is load-bearing: a short write makes
+// writeToStreamDataBlock() give up with HTTPC_ERROR_STREAM_WRITE, and
+// returnError() then calls _client->stop() — tearing down the single keep-alive
+// connection this whole exchange is built around. Overflow bytes are dropped on
+// the floor, the socket still drains cleanly, and overflow_ records the loss.
+class BufferSink : public Stream {
+ public:
+  BufferSink(char* buf, size_t cap) : buf_(buf), cap_(cap) {}
+
+  size_t write(uint8_t b) override {
+    if (len_ < cap_) {
+      buf_[len_++] = static_cast<char>(b);
+    } else {
+      overflow_ = true;
+    }
+    return 1;  // never short: see class comment
+  }
+
+  size_t write(const uint8_t* data, size_t size) override {
+    const size_t room = cap_ - len_;
+    const size_t n = size < room ? size : room;
+    if (n > 0) {
+      memcpy(buf_ + len_, data, n);
+      len_ += n;
+    }
+    if (n < size) {
+      overflow_ = true;
+    }
+    return size;  // never short: see class comment
+  }
+
+  // Read side: unused, present only because Stream declares it pure virtual.
+  int available() override { return 0; }
+  int read() override { return -1; }
+  int peek() override { return -1; }
+
+  size_t length() const { return len_; }
+  bool overflowed() const { return overflow_; }
+
+ private:
+  char* buf_;
+  size_t cap_;
+  size_t len_ = 0;
+  bool overflow_ = false;
+};
+
 // Copies a trimmed HTTP error body into out for diagnostics (safe: OpenAI
 // error JSON, never the request headers).
+// This is the file's one remaining getString(), and it stays: it runs only on a
+// non-200, error bodies are small, and it truncates to 48 chars anyway — the
+// internal-RAM blowup that forced phase 2 onto a PSRAM sink cannot happen here.
 void snipBody(HTTPClient& http, char* out, size_t cap) {
   String body = http.getString();
   body.replace('\n', ' ');
@@ -261,68 +324,110 @@ void assistantWorkerBody(AssistantService* self) {
       snprintf(self->lastError_, sizeof(self->lastError_), "responses %d %s", code, snip);
       self->workerFailed_ = true;
     } else {
-      // The filter is load-bearing: with web search on, the raw body carries
-      // search calls, queries and citation blocks, and parsing it whole
-      // exhausts RAM. It must keep the `type` discriminators or a
-      // web_search_call is indistinguishable from a message. In an array
-      // filter, element 0 applies to every element.
-      JsonDocument filter;
-      filter["output"][0]["type"] = true;
-      filter["output"][0]["content"][0]["type"] = true;
-      filter["output"][0]["content"][0]["text"] = true;
-      filter["error"] = true;  // a 200 can still carry a structured error
-      JsonDocument doc;
-      if (deserializeJson(doc, http.getString(),
-                          DeserializationOption::Filter(filter)) !=
-          DeserializationError::Ok) {
-        snprintf(self->lastError_, sizeof(self->lastError_), "responses parse failed");
+      // Read the body into PSRAM, NOT into an Arduino String: getString()
+      // buffers the whole thing in internal RAM, and a web-search-backed answer
+      // is far bigger than the plain completion this was written for.
+      //
+      // writeToStream() (never useHTTP10(true) — that forces HTTP/1.0, closes
+      // the socket and costs a second TLS handshake before TTS, which is
+      // exactly the fragmentation the single connection exists to prevent)
+      // handles Content-Length and chunked framing alike and leaves the
+      // connection reusable.
+      char* buf = static_cast<char*>(
+          heap_caps_malloc(kResponseBufferBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+      if (buf == nullptr) {
+        snprintf(self->lastError_, sizeof(self->lastError_), "out of memory");
         self->workerFailed_ = true;
       } else {
-        // `output_text` is an SDK convenience and is NOT in the raw JSON: walk
-        // `output` ourselves. Message items are interleaved with
-        // web_search_call items, and a message may hold several text parts.
-        size_t used = 0;
-        self->answer_[0] = '\0';
-        for (JsonObjectConst item : doc["output"].as<JsonArrayConst>()) {
-          if (used >= sizeof(self->answer_) - 1) {
-            break;
-          }
-          const char* itemType = item["type"];
-          if (itemType == nullptr || strcmp(itemType, "message") != 0) {
-            continue;  // web_search_call, reasoning, anything else
-          }
-          for (JsonObjectConst part : item["content"].as<JsonArrayConst>()) {
-            const char* partType = part["type"];
-            if (partType == nullptr || strcmp(partType, "output_text") != 0) {
-              continue;  // refusal, annotations-only part, ...
-            }
-            const char* text = part["text"];
-            if (text == nullptr) {
-              continue;
-            }
-            const size_t room = sizeof(self->answer_) - 1 - used;
-            if (room == 0) {
-              break;
-            }
-            const size_t n = strnlen(text, room);
-            memcpy(self->answer_ + used, text, n);
-            used += n;
-            self->answer_[used] = '\0';
-          }
-        }
-        if (used == 0) {
-          // Deliberately distinct from "responses parse failed": well-formed
-          // JSON with no assistant text is a different bug from malformed
-          // JSON, and this is the only diagnostic the field gets.
-          const char* apiError = doc["error"]["message"];
-          if (apiError != nullptr) {
-            snprintf(self->lastError_, sizeof(self->lastError_), "responses error: %s",
-                     apiError);
-          } else {
-            snprintf(self->lastError_, sizeof(self->lastError_), "no answer in response");
-          }
+        BufferSink sink(buf, kResponseBufferBytes);
+        const int sunk = http.writeToStream(&sink);
+        // Printed every exchange so a walk-down across web-search answers is
+        // visible over serial rather than inferred after the fact.
+        Serial.printf(
+            "[assistant] response body %u bytes%s (writeToStream %d) — internal heap %u KB free "
+            "(largest %u KB)\n",
+            (unsigned)sink.length(), sink.overflowed() ? " TRUNCATED" : "", sunk,
+            (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
+            (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024));
+
+        if (sink.overflowed()) {
+          // Report this BEFORE parsing. A truncated body is malformed JSON, and
+          // "responses parse failed" would send the field chasing an API bug
+          // that is not there — the buffer simply ran out.
+          snprintf(self->lastError_, sizeof(self->lastError_), "response too large");
           self->workerFailed_ = true;
+        } else {
+          // The filter is load-bearing: with web search on, the raw body carries
+          // search calls, queries and citation blocks, and parsing it whole
+          // exhausts RAM. It must keep the `type` discriminators or a
+          // web_search_call is indistinguishable from a message. In an array
+          // filter, element 0 applies to every element.
+          JsonDocument filter;
+          filter["output"][0]["type"] = true;
+          filter["output"][0]["content"][0]["type"] = true;
+          filter["output"][0]["content"][0]["text"] = true;
+          filter["error"] = true;  // a 200 can still carry a structured error
+          JsonDocument doc;
+          // Non-const char* + length picks ArduinoJson's zero-copy mode: the
+          // document points into buf instead of duplicating every string into
+          // itself. buf therefore has to outlive the walk below — which is why
+          // the free sits at the bottom of this block, not here.
+          if (deserializeJson(doc, buf, sink.length(),
+                              DeserializationOption::Filter(filter)) !=
+              DeserializationError::Ok) {
+            snprintf(self->lastError_, sizeof(self->lastError_), "responses parse failed");
+            self->workerFailed_ = true;
+          } else {
+            // `output_text` is an SDK convenience and is NOT in the raw JSON: walk
+            // `output` ourselves. Message items are interleaved with
+            // web_search_call items, and a message may hold several text parts.
+            size_t used = 0;
+            self->answer_[0] = '\0';
+            for (JsonObjectConst item : doc["output"].as<JsonArrayConst>()) {
+              if (used >= sizeof(self->answer_) - 1) {
+                break;
+              }
+              const char* itemType = item["type"];
+              if (itemType == nullptr || strcmp(itemType, "message") != 0) {
+                continue;  // web_search_call, reasoning, anything else
+              }
+              for (JsonObjectConst part : item["content"].as<JsonArrayConst>()) {
+                const char* partType = part["type"];
+                if (partType == nullptr || strcmp(partType, "output_text") != 0) {
+                  continue;  // refusal, annotations-only part, ...
+                }
+                const char* text = part["text"];
+                if (text == nullptr) {
+                  continue;
+                }
+                const size_t room = sizeof(self->answer_) - 1 - used;
+                if (room == 0) {
+                  break;
+                }
+                const size_t n = strnlen(text, room);
+                memcpy(self->answer_ + used, text, n);
+                used += n;
+                self->answer_[used] = '\0';
+              }
+            }
+            if (used == 0) {
+              // Deliberately distinct from "responses parse failed": well-formed
+              // JSON with no assistant text is a different bug from malformed
+              // JSON, and this is the only diagnostic the field gets.
+              const char* apiError = doc["error"]["message"];
+              if (apiError != nullptr) {
+                snprintf(self->lastError_, sizeof(self->lastError_), "responses error: %s",
+                         apiError);
+              } else {
+                snprintf(self->lastError_, sizeof(self->lastError_), "no answer in response");
+              }
+              self->workerFailed_ = true;
+            }
+          }
         }
+        // One exit for the buffer: every branch above (overflow, parse failure,
+        // no-answer, success) falls through to here, and `doc` is dead by now.
+        heap_caps_free(buf);
       }
     }
     http.end();
