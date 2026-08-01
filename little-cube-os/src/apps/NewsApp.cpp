@@ -6,6 +6,7 @@
 #include "../core/SystemState.h"
 #include "../hardware/DisplayAdapter.h"
 #include "../ui/AmoledProtection.h"
+#include "../ui/QrCode.h"
 #include "../ui/Theme.h"
 
 namespace {
@@ -21,8 +22,23 @@ constexpr size_t kTitleClip = 27;
 // the band between the position header and a slim footer. These MUST match
 // what wrapWalk is fed for both pagination and drawing.
 constexpr int16_t kDetailTop = theme::kStatusBarHeight + 30;
-constexpr int16_t kDetailBottom = DISPLAY_HEIGHT - 36;  // footer band starts here
+// Footer band starts here. widgets::footer() puts its rule at
+// DISPLAY_HEIGHT - 44 and returns a budget 12 px above that, so this must
+// not exceed 392. The old value (DISPLAY_HEIGHT - 36 = 412) ran 8 px PAST
+// the shared rule, so body text drew over the hairline.
+constexpr int16_t kDetailBottom = DISPLAY_HEIGHT - 56;
+static_assert(kDetailBottom <= DISPLAY_HEIGHT - 44 - 12,
+              "detail text must stop above widgets::footer()'s content budget");
 constexpr int16_t kDetailBodyW = DISPLAY_WIDTH - 2 * theme::kPadding;
+
+// QR page geometry, laid out inside the same [kDetailTop, kDetailBottom] band
+// the text pages use: a 260 px code, then the caption and host beneath it.
+constexpr int16_t kQrBox = 260;
+constexpr int16_t kQrX = (DISPLAY_WIDTH - kQrBox) / 2;
+constexpr int16_t kQrY = kDetailTop + 4;                 // 62 .. 322
+constexpr int16_t kQrCaptionY = kQrY + kQrBox + 8;       // 330, Body (29 tall)
+constexpr int16_t kQrHostY = kQrCaptionY + 30;           // 360, Caption (22 tall)
+static_assert(kQrHostY + 22 <= kDetailBottom, "QR page must fit above the footer band");
 
 // Fixed GFX cell, multiplied by text size — the same constants the fixed-cell
 // widgets::textBlock wraps against.
@@ -117,6 +133,84 @@ void clipText(char* dst, size_t cap, const char* src, size_t maxChars) {
   dst[keep + 1] = '.';
   dst[keep + 2] = '.';
   dst[keep + 3] = '\0';
+}
+
+// Query keys that carry no routing information — dropping them shortens the
+// URL, which lowers the QR version and so widens every module. BBC's RSS
+// links arrive as "...?at_medium=RSS&at_campaign=rss", which is ~27 wasted
+// characters, enough to cost a version step.
+bool isTrackerKey(const char* key, size_t len) {
+  if (len > 3 && strncmp(key, "at_", 3) == 0) {
+    return true;
+  }
+  static const char* const kKeys[] = {"utm_source", "utm_medium", "utm_campaign",
+                                      "utm_term",   "utm_content", "ref",
+                                      "fbclid"};
+  for (const char* k : kKeys) {
+    if (strlen(k) == len && strncmp(key, k, len) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Copy src into dst, dropping the query string ONLY when every key in it is a
+// known tracker. Deliberately conservative: guessing wrong here yields a
+// tidier code that 404s, and a denser QR that resolves beats that every time.
+void stripTrackers(char* dst, size_t cap, const char* src) {
+  if (cap == 0) {
+    return;
+  }
+  const char* query = strchr(src, '?');
+  size_t keep = query != nullptr ? static_cast<size_t>(query - src) : strlen(src);
+  if (query != nullptr) {
+    bool allTrackers = true;
+    for (const char* p = query + 1; *p != '\0';) {
+      const char* amp = strchr(p, '&');
+      const char* end = amp != nullptr ? amp : p + strlen(p);
+      const char* eq =
+          static_cast<const char*>(memchr(p, '=', static_cast<size_t>(end - p)));
+      const size_t keyLen = static_cast<size_t>((eq != nullptr ? eq : end) - p);
+      if (keyLen == 0 || !isTrackerKey(p, keyLen)) {
+        allTrackers = false;
+        break;
+      }
+      if (amp == nullptr) {
+        break;
+      }
+      p = amp + 1;
+    }
+    if (!allTrackers) {
+      keep = strlen(src);  // keep the query whole
+    }
+  }
+  if (keep > cap - 1) {
+    keep = cap - 1;
+  }
+  memcpy(dst, src, keep);
+  dst[keep] = '\0';
+}
+
+// "https://www.bbc.co.uk/news/articles/c123" -> "bbc.co.uk". Shown under the
+// QR so the user can see where the code points before scanning it.
+void hostOf(char* dst, size_t cap, const char* url) {
+  if (cap == 0) {
+    return;
+  }
+  const char* p = strstr(url, "://");
+  p = p != nullptr ? p + 3 : url;
+  if (strncmp(p, "www.", 4) == 0) {
+    p += 4;
+  }
+  size_t len = 0;
+  while (p[len] != '\0' && p[len] != '/' && p[len] != ':' && p[len] != '?') {
+    len++;
+  }
+  if (len > cap - 1) {
+    len = cap - 1;
+  }
+  memcpy(dst, p, len);
+  dst[len] = '\0';
 }
 }  // namespace
 
@@ -234,7 +328,11 @@ void NewsApp::renderList(Arduino_GFX& gfx) {
   gfx.print(busy ? "..." : "refresh");
 
   // Subtitle: loading / freshness, marked offline when serving the cache.
-  char sub[56];
+  // 64, not 56: freshness() writes up to 47 chars and " - offline" adds 10,
+  // so 56 could truncate (and did warn). Sized to hold the longest result.
+  char sub[64];
+  static_assert(sizeof(sub) >= 48 + sizeof(" - offline"),
+                "sub must hold the widest freshness string plus the offline suffix");
   if (busy) {
     snprintf(sub, sizeof(sub), "Loading...");
   } else if (news != nullptr) {
@@ -291,14 +389,14 @@ void NewsApp::renderList(Arduino_GFX& gfx) {
     y += kRowStride;
   }
 
+  // Shared footer: status left (ellipsizes), action hint right (wins the
+  // space), rule 44 px up so the text clears the bezel's corner radius, and
+  // drifting with the burn-in offsets (spec §37) like all persistent chrome.
   char pager[40];
-  snprintf(pager, sizeof(pager), "%u-%u of %u   swipe up/down",
-           static_cast<unsigned>(pageStart_ + 1),
+  snprintf(pager, sizeof(pager), "%u-%u of %u", static_cast<unsigned>(pageStart_ + 1),
            static_cast<unsigned>(min(pageStart_ + kPageSize, n)), static_cast<unsigned>(n));
-  gfx.setTextSize(theme::kTextSizeSmall);
-  gfx.setTextColor(theme::kTextDim);
-  gfx.setCursor(theme::kPadding, DISPLAY_HEIGHT - 28);
-  gfx.print(pager);
+  widgets::footer(gfx, pager, "swipe up/down", services_.amoled->shiftX(),
+                  services_.amoled->shiftY());
 }
 
 uint8_t NewsApp::detailFontSize() const {
@@ -312,6 +410,10 @@ void NewsApp::composeDetail() {
   snprintf(detail_, sizeof(detail_), "%s\n\n%s\n\nLink: %s", h.title,
            h.summary[0] != '\0' ? h.summary : "(no summary for this story)",
            h.url[0] != '\0' ? h.url : "(no article link)");
+  // QR payload, built here and only here: render() must never encode. The
+  // text page above keeps the COMPLETE url; only the encoded copy is stripped.
+  stripTrackers(qrUrl_, sizeof(qrUrl_), h.url);
+  hostOf(qrHost_, sizeof(qrHost_), h.url);
   detailPage_ = 0;
   layoutDetailPages();
   dirty_ = true;
@@ -335,8 +437,10 @@ void NewsApp::layoutDetailPages() {
     pageOffsets_[0] = 0;
     detailPages_ = 1;
   }
-  if (detailPage_ >= detailPages_) {
-    detailPage_ = detailPages_ - 1;
+  // Upper bound is detailPages_, not detailPages_ - 1: the QR page sits one
+  // past the last text page.
+  if (detailPage_ > detailPages_) {
+    detailPage_ = detailPages_;
   }
 }
 
@@ -344,27 +448,78 @@ void NewsApp::cycleDetailFont() {
   // Page boundaries depend on the font; keep the reading position by re-finding
   // the page that contains the old top-of-page offset (ReaderApp's contract,
   // trivial here because every page start is in pageOffsets_).
-  const uint16_t oldOffset = pageOffsets_[detailPage_];
+  const bool onQr = detailPage_ >= detailPages_;
+  const uint16_t oldOffset = onQr ? 0 : pageOffsets_[detailPage_];
   fontIdx_ = static_cast<uint8_t>((fontIdx_ + 1) % kDetailFontCount);
   detailPage_ = 0;
   layoutDetailPages();
-  for (uint8_t i = 0; i < detailPages_; i++) {
-    if (pageOffsets_[i] <= oldOffset) {
-      detailPage_ = i;
+  if (onQr) {
+    // The QR page has no text to re-flow — it is the same page at any font,
+    // just at a new index now that the text ahead of it repaginated. Reading
+    // pageOffsets_[detailPages_] here would index past the last written entry.
+    detailPage_ = detailPages_;
+  } else {
+    for (uint8_t i = 0; i < detailPages_; i++) {
+      if (pageOffsets_[i] <= oldOffset) {
+        detailPage_ = i;
+      }
     }
   }
   dirty_ = true;
 }
 
+// The last page of every story: the article link as a QR, so the phone in the
+// user's other hand can open what the cube can't browse. Everything drawn here
+// comes from buffers composeDetail() filled — no encoding, no allocation, no
+// I/O, because this runs on every SystemState version bump for as long as the
+// page stays open.
+void NewsApp::renderQrPage(Arduino_GFX& gfx, const char* fullUrl) {
+  const int16_t sx = services_.amoled->shiftX();
+  const int16_t sy = services_.amoled->shiftY();
+
+  // bg MUST be light and is checked by qrcode::draw(): scanners need dark
+  // modules on a light field, and half this firmware's palettes are dark, so
+  // theme::kBg would be rejected outright. White/black, always.
+  const bool drawn = qrUrl_[0] != '\0' && qrcode::draw(gfx, kQrX + sx, kQrY + sy, kQrBox,
+                                                       qrUrl_, 0x0000, 0xFFFF);
+  if (drawn) {
+    // Centred inside the safe band, not the raw panel width: at shiftX = +2 a
+    // full-width centring box would itself hang 2 px off the right edge.
+    constexpr int16_t kCapW = DISPLAY_WIDTH - 2 * theme::kSafeInset;
+    widgets::textCentered(gfx, theme::kSafeInset + sx, kQrCaptionY + sy, kCapW, "scan to open",
+                          widgets::TextStyle::Body, theme::kText);
+    widgets::textCentered(gfx, theme::kSafeInset + sx, kQrHostY + sy, kCapW,
+                          qrHost_[0] != '\0' ? qrHost_ : "unknown host",
+                          widgets::TextStyle::Caption, theme::kTextDim);
+    return;
+  }
+
+  // Degraded, never blank: say why there is no code and show the link itself
+  // so the page still carries the same information.
+  const char* why = qrUrl_[0] == '\0' ? "no article link" : "link too long to encode";
+  widgets::text(gfx, theme::kSafeInset + sx, kDetailTop + 8 + sy, why, widgets::TextStyle::Body,
+                theme::kWarn);
+  if (fullUrl != nullptr && fullUrl[0] != '\0') {
+    widgets::textBlock(gfx, theme::kSafeInset + sx, kDetailTop + 44 + sy,
+                       DISPLAY_WIDTH - 2 * theme::kSafeInset, fullUrl,
+                       widgets::TextStyle::Caption, theme::kTextDim,
+                       static_cast<uint8_t>((kDetailBottom - kDetailTop - 44) /
+                                            widgets::lineHeight(widgets::TextStyle::Caption)));
+  }
+}
+
 void NewsApp::renderDetail(Arduino_GFX& gfx) {
+  const int16_t sx = services_.amoled->shiftX();
+  const int16_t sy = services_.amoled->shiftY();
   const size_t n = count();
   if (openIndex_ >= n) {
     // update()/onResume() normally clamp this; guard so a race never indexes
     // past the end.
     gfx.setTextSize(theme::kTextSizeSmall);
     gfx.setTextColor(theme::kTextDim);
-    gfx.setCursor(theme::kPadding, kContentTop);
+    gfx.setCursor(theme::kSafeInset + sx, kContentTop + sy);
     gfx.print("headline no longer available");
+    widgets::footer(gfx, "no story", "back", sx, sy);
     return;
   }
 
@@ -374,29 +529,28 @@ void NewsApp::renderDetail(Arduino_GFX& gfx) {
            static_cast<unsigned>(n));
   gfx.setTextSize(theme::kTextSizeSmall);
   gfx.setTextColor(theme::kTextDim);
-  gfx.setCursor(DISPLAY_WIDTH - theme::kPadding - static_cast<int16_t>(strlen(pos)) * 12,
-                theme::kStatusBarHeight + 6);
+  gfx.setCursor(DISPLAY_WIDTH - theme::kPadding - static_cast<int16_t>(strlen(pos)) * 12 + sx,
+                theme::kStatusBarHeight + 6 + sy);
   gfx.print(pos);
 
-  // Current page of the composed title + summary + link text.
+  // Pages [0, detailPages_) are the composed title + summary + link text;
+  // detailPages_ itself is the QR.
   const uint8_t fs = detailFontSize();
-  wrapWalk(&gfx, detail_, pageOffsets_[detailPage_], fs, theme::kPadding, kDetailTop,
-           detailMaxLines(fs), theme::kText);
+  if (detailPage_ < detailPages_) {
+    wrapWalk(&gfx, detail_, pageOffsets_[detailPage_], fs, theme::kPadding + sx, kDetailTop + sy,
+             detailMaxLines(fs), theme::kText);
+  } else {
+    renderQrPage(gfx, services_.news->headline(openIndex_).url);
+  }
 
-  // Footer: page + font on the left, navigation hint on the right.
-  char foot[24];
-  snprintf(foot, sizeof(foot), "pg %u/%u   A%u", static_cast<unsigned>(detailPage_ + 1),
-           static_cast<unsigned>(detailPages_), static_cast<unsigned>(fs));
-  gfx.setTextSize(theme::kTextSizeSmall);
-  gfx.setTextColor(theme::kTextDim);
-  gfx.setCursor(theme::kPadding, DISPLAY_HEIGHT - 28);
-  gfx.print(foot);
-
-  const char* hint = "swipe: prev/next";
-  gfx.setTextColor(theme::kPanelAlt);
-  gfx.setCursor(DISPLAY_WIDTH - theme::kPadding - static_cast<int16_t>(strlen(hint)) * 12,
-                DISPLAY_HEIGHT - 28);
-  gfx.print(hint);
+  // Shared footer: page + font on the left (yields, ellipsizes), navigation
+  // hint on the right (wins the space). Both in kTextDim — theme::kPanelAlt,
+  // which the old hand-placed hint used, is a FILL colour: 1.24-1.40:1 against
+  // kBg on every palette, i.e. invisible ink.
+  char foot[32];
+  snprintf(foot, sizeof(foot), "pg %u/%u  A%u", static_cast<unsigned>(detailPage_ + 1),
+           static_cast<unsigned>(detailPages_ + 1), static_cast<unsigned>(fs));
+  widgets::footer(gfx, foot, "swipe: prev/next", sx, sy);
 }
 
 bool NewsApp::handleList(const InputEvent& event) {
@@ -456,8 +610,10 @@ bool NewsApp::handleDetail(const InputEvent& event) {
         composeDetail();
       }
       return true;
+    // The pager runs to detailPages_ inclusive — one past the last text page
+    // is the QR page, so "next" stops at detailPages_, not detailPages_ - 1.
     case InputAction::SwipeUp:
-      if (detailPage_ + 1 < detailPages_) {
+      if (detailPage_ < detailPages_) {
         detailPage_++;
         dirty_ = true;
       }
@@ -479,7 +635,7 @@ bool NewsApp::handleDetail(const InputEvent& event) {
             detailPage_--;
             dirty_ = true;
           }
-        } else if (detailPage_ + 1 < detailPages_) {
+        } else if (detailPage_ < detailPages_) {
           detailPage_++;
           dirty_ = true;
         }

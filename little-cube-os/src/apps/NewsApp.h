@@ -15,6 +15,12 @@
 // cycling the font size just like the reader. A header "refresh" button
 // re-pulls. Honest offline / loading / empty states; no filesystem or network
 // work in render().
+//
+// The detail pager carries ONE extra page past the text: a scannable QR of the
+// article link, so getting the story onto a phone is the same swipe the user
+// already uses to turn a page ("pg 3/3" simply is the QR). detailPages_ counts
+// the text pages only — the valid page range is [0, detailPages_], and
+// detailPage_ == detailPages_ is the QR page.
 class NewsApp : public App {
  public:
   explicit NewsApp(Services& services) : services_(services) {}
@@ -33,6 +39,7 @@ class NewsApp : public App {
 
   void renderList(Arduino_GFX& gfx);
   void renderDetail(Arduino_GFX& gfx);
+  void renderQrPage(Arduino_GFX& gfx, const char* fullUrl);
   bool handleList(const InputEvent& event);
   bool handleDetail(const InputEvent& event);
   void triggerRefresh();
@@ -71,7 +78,16 @@ class NewsApp : public App {
   static constexpr uint8_t kDetailFontCount = 3;
   char detail_[kDetailCap] = "";
   uint16_t pageOffsets_[kMaxDetailPages] = {0};
-  uint8_t detailPages_ = 1;
+  uint8_t detailPages_ = 1;  // TEXT pages; the QR page is index detailPages_
   uint8_t detailPage_ = 0;
+
+  // The QR page's payload, built once per story in composeDetail() — never in
+  // render(). qrcode::draw() caches its encode keyed on the text, so passing
+  // this same stable buffer every repaint hits the cache instead of paying the
+  // 8-35 ms encode on every SystemState version bump. Trackers are stripped
+  // here (a shorter URL means a lower QR version and fatter modules); the link
+  // page in detail_ still shows the complete URL.
+  char qrUrl_[sizeof(Headline::url)] = "";
+  char qrHost_[48] = "";
   uint8_t fontIdx_ = 0;  // index into the size table in the .cpp (RAM-only, like Reader)
 };
