@@ -200,6 +200,33 @@ remain unverified until Task 5 puts a face on screen.
       reboot) — the serial round-trip is verified above, the tap path is not
 - [ ] Screen still dims and blanks on the normal timeout with a face open
 
+## Screen polish — ASCII faces, Weather, Today, News (Tasks 6-8, 10)
+
+**2026-07-31, all confirmed on the device.**
+
+- [x] Four ASCII clock faces render: Block, Prompt, Segment, Binary. The
+      Segment face is the notable one — the built-in font's `|` (0x7C) is a
+      **broken bar** (rows 3 and 7 blank), so a seven-segment vertical spanning
+      two stacked cells would have rendered as four dashes. Substituting
+      `0xB3`, the only full-height solid column in the table, reads correctly
+      on glass.
+- [x] Weather renders as `wttr.in`-style ASCII art with tap-cycled
+      Now/Forecast/Details views
+- [x] Today renders as a `neofetch`-style system readout
+- [x] **News QR scans with a phone and opens the correct article.** This is
+      the first on-device execution of `qrcode::draw()` and everything behind
+      it: the ESP-IDF encoder bundled with the Arduino core (no third-party
+      library), the encoded-code cache, the `bg` luminance guard, and the 2 px
+      minimum module size. A stripped BBC URL lands on QR version 3 at 7 px per
+      module in a 260 px box.
+- [x] News footers clear the bezel on **both** the list and the detail views —
+      this was the user's originally reported "cut off on bottom left"
+- [ ] The `link too long to encode` fallback — not reachable in practice
+      (`Headline::url` is 160 bytes, well under the v17 cap of 644), so it is
+      contract-only and untested
+- [ ] Sub-zero temperatures agree across Weather, Today and the Home carousel
+      (the `roundC` consolidation) — needs a freezing day or a forced snapshot
+
 ## Video (FEATURE_VIDEO)
 
 Prereq: at least one real `.lcv` on the card under `/littlecube/video/`
