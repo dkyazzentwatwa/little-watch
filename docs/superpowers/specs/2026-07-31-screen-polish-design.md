@@ -8,7 +8,7 @@
 Bring the six screens that were never migrated to the 2026-07-26 type system up to
 the standard of the rest of the device, fix the layout bugs that cut text off at
 the panel's rounded corners, and give the Clock a set of selectable faces —
-including animated character faces.
+three typographic and four ASCII-art.
 
 ## Why these six
 
@@ -42,9 +42,26 @@ closes.
 | Scope | Polish pass now; timers/stopwatch/alarms get their own spec |
 | QR codes | Yes — add a QR encoder library |
 | Weather views | Condition icon on the hero, tap-cycled Now/Forecast/Details, per-day icons |
-| Clock faces | Big digital, Stacked typographic, Word clock, Blinky, Big Eyes, Mood Cube |
-| Kawaii blanking | Faces respect the screen timeout like every other screen |
+| Clock faces | Big digital, Stacked typographic, Word clock, **Block, Prompt, Segment, Binary** |
+| Face blanking | Faces respect the screen timeout like every other screen |
 | Today content | Weather with icon, battery as a real row |
+
+⚠️ **Face list revised 2026-07-31, after seeing Task 5 on hardware.** The
+original three character faces — Blinky, Big Eyes and Mood Cube — were
+**scrapped before being built**. With the first three faces on the actual
+panel, the user's reaction was that character faces were not what this device
+wanted, and asked instead for "minimalistic ASCII hacker art" faces. Four
+replace the three, for seven total:
+
+- **Block** — figlet-style digits built from block characters
+- **Prompt** — a fake shell session with a blinking cursor
+- **Segment** — classic `_` and `|` ASCII seven-segment digits
+- **Binary** — filled/hollow dots encoding hours and minutes
+
+This is what flashing early bought: three unbuilt renderers changed direction
+at the cost of an edit rather than after they existed. It also cost one line
+to widen `kFaceCount` from 6 to 7, because an earlier review had already
+removed the duplicated count from `SettingsService`.
 
 Three choices were made on the user's behalf during design and explicitly
 confirmed:
@@ -114,11 +131,17 @@ int16_t footer(Arduino_GFX& gfx, const char* left, const char* right,
                int16_t shiftX, int16_t shiftY);
 ```
 
-Geometry: rule at `DISPLAY_HEIGHT - 40 + shiftY`, text drawn in
-`TextStyle::Caption` with its top at `DISPLAY_HEIGHT - 34 + shiftY`, left text at
-`kSafeInset + shiftX`, right text right-aligned to `DISPLAY_WIDTH - kSafeInset +
-shiftX`. When the two strings would overlap, the right string is dropped rather
-than truncated — a half-drawn hint is worse than none.
+Geometry **as shipped and confirmed on device (2026-07-31)**: rule at
+`DISPLAY_HEIGHT - 44 + shiftY` spanning `kPadding` to `DISPLAY_WIDTH - kPadding`
+so it aligns with `header()`'s rule; caption text at `ruleY + 8`, inset to
+`kSafeInset` because the ink sits ~19 px off the bottom edge, inside the corner
+zone the rule at 44 px up does not reach. Returns `ruleY - 12` — a padded
+content budget, mirroring `header()`.
+
+`right` holds action hints and wins the space; `left` holds status and
+ellipsizes into what remains. Both are drawn in `kTextDim`: `kPanelAlt` is a
+fill colour and measures 1.24–1.40:1 against `kBg` on all ten palettes, i.e.
+invisible.
 
 Every footer on the six screens routes through this helper. No screen keeps a
 hand-placed `setCursor(theme::kPadding, DISPLAY_HEIGHT - 28)`.
@@ -208,17 +231,18 @@ enum class FaceId : uint8_t {
   BigDigital,   // default
   Stacked,
   Word,
-  Blinky,
-  BigEyes,
-  MoodCube,
+  Block,
+  Prompt,
+  Segment,
+  Binary,
 };
-constexpr uint8_t kFaceCount = 6;
+constexpr uint8_t kFaceCount = 7;
 
 const char* name(FaceId id);   // shown briefly on switch, and in serial output
 
 struct FaceContext {
   const struct tm* time;   // nullptr when the clock is not set
-  const SystemState* state;  // battery/charging, for MoodCube
+  const SystemState* state;  // shared device status, available to any face
   uint32_t animMs;         // monotonic ms since the app opened
   int16_t shiftX;
   int16_t shiftY;
@@ -252,37 +276,43 @@ past"`, `"ten past"`, `"quarter past"`, `"twenty past"`, `"twenty-five past"`,
 `"half past"`, then the `to` forms, with the hour advanced past `"half past"`.
 Hours name the 12-hour form. Renders `"time not set"` when `time` is nullptr.
 
-**Blinky** — two eyes and a smile above the time in `Display`. Animated: eyes
-close for 140 ms, pupils drift on a slow cycle.
+**Block** — the time as figlet-style digits built from block characters, date
+in small caps beneath. Static.
 
-**BigEyes** — screen-filling eyes that blink and glance, time in `Caption` in the
-top-left inside the safe inset. Animated. Carries the least information of the
-six by design.
+**Prompt** — a fake shell session: a prompt line, a `date +%H:%M` command, the
+time in large type, the date, and a trailing prompt with a **blinking cursor**.
+The cursor is the only animation among the ASCII faces; at ~1 Hz it asks for a
+frame roughly every 500 ms rather than every tick.
 
-**MoodCube** — a single large rounded-square face whose expression is a function
-of real state, plus the time inside the bottom of the face:
+**Segment** — digits drawn from `_` and `|` in the classic ASCII seven-segment
+style, three text rows per digit. Static.
 
-| State | Expression |
-|---|---|
-| `state.charging` | star eyes, wide smile |
-| `state.batteryPercent >= 0 && < 15` | droopy eyes, flat mouth |
-| local hour >= 22 or < 7 | sleepy half-closed eyes |
-| otherwise | neutral-happy with blush |
+**Binary** — two rows of filled/hollow dots encoding hours and minutes, with a
+small decimal readout beneath so the face is never unreadable. Static.
 
-Checked in that order; the first match wins. `batteryPercent < 0` means unknown
-and never triggers the low-battery face. Animated (blink only).
+⚠️ **The four ASCII faces use the built-in 6x8 bitmap font, not the proportional
+FreeSans faces.** This is deliberate and is the one place in the codebase where
+the pre-migration font is the correct choice: ASCII art depends on every glyph
+occupying the same cell, and proportional glyphs destroy the alignment that
+makes `_` and `|` read as segments. Call `gfx.setFont(nullptr)` explicitly
+rather than relying on the widget helpers having restored it.
 
 ### 2.4 Animation and the frame budget
 
-`ClockApp::update(deltaMs)` accumulates `animMs_`. When the last `render()`
-returned `true`, the app marks itself dirty every update so the animation
-advances; the existing ~30 fps `present()` cap bounds the cost. When it returned
-`false`, the app marks dirty only on a minute change or a `state.version` move —
-exactly today's behaviour.
+`clockfaces::render()` returns **milliseconds until the face wants its next
+frame** — `0` for as-soon-as-possible, `kFaceStatic` for nothing-moves-until-the
+-minute-rolls. `ClockApp::update(deltaMs)` counts that down and marks dirty when
+it reaches zero.
 
-Blink cadence is driven from `animMs_` through a small linear congruential
-generator seeded at `onOpen()`, giving gaps in the 3.0–6.5 s range. A fixed
-cadence reads as mechanical; this costs a few bytes and no RNG dependency.
+⚠️ **It is not a bool, and that matters.** A bool can only say "static forever"
+or "redraw every tick". Prompt's cursor blinks at ~1 Hz: returning false between
+blinks would starve it to the ~2 frames/min the minute roll and the pixel shift
+produce, so it would never blink; returning true would repaint the full 322 KB
+PSRAM canvas and flush QSPI at 30 fps continuously, on the screen users leave
+open longest. Returning ~500 ms costs two frames per second instead of thirty.
+
+Six of the seven faces are static and return `kFaceStatic`. Only Prompt
+animates.
 
 Faces respect the screen timeout. Nothing here calls
 `AmoledProtection::keepAwake()` — that path exists for video playback and stays
@@ -446,11 +476,11 @@ access happens while the analog mic is live.
 |---|---|
 | No SD card | All six screens render. Recorder shows the specific `SdCardState`, never a generic error. |
 | No Wi-Fi | Weather shows `offline - no cached weather yet`; Assistant surfaces its existing offline refusal. |
-| Time not set | Clock faces render `--:--` or `time not set`; Word clock and MoodCube handle a null `tm`. |
+| Time not set | Every face renders `--:--` or `time not set` plus the recovery hint; all seven handle a null `tm`. |
 | Weather cache from before restart | `cached (before restart)` in `kWarn`; never presented as current. |
 | URL too long for QR | Page renders the reason plus the URL text. |
 | Stored `clockFace` out of range | Clamps to `BigDigital`. |
-| `batteryPercent < 0` (unknown) | MoodCube never shows the low-battery face; Today's status card says unknown. |
+| `batteryPercent < 0` (unknown) | Today's status card says unknown rather than showing a number. |
 
 ## Verification
 
