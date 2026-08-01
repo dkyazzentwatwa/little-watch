@@ -17,18 +17,22 @@ enum class FaceId : uint8_t {
   BigDigital,  // default
   Stacked,
   Word,
-  Blinky,
-  BigEyes,
-  MoodCube,
+  Block,    // ASCII faces from here down; see ClockFaces.cpp
+  Prompt,
+  Segment,
+  Binary,
 };
-constexpr uint8_t kFaceCount = 6;
+constexpr uint8_t kFaceCount = 7;
 
 // Display label, e.g. for the footer and `settings get clockface`.
 const char* name(FaceId id);
 
 struct FaceContext {
   const struct tm* time = nullptr;      // nullptr when the clock is not set
-  const SystemState* state = nullptr;   // battery/charging, for MoodCube
+  const SystemState* state = nullptr;   // shared status snapshot; no face reads
+                                        // it today, kept because the renderers
+                                        // are the only place a face could
+                                        // legitimately reflect battery/charge
   uint32_t animMs = 0;                  // monotonic ms since the app opened
   int16_t shiftX = 0;
   int16_t shiftY = 0;
@@ -42,13 +46,13 @@ constexpr uint32_t kFaceStatic = 0xFFFFFFFFu;
 //   kFaceStatic  — nothing moves until the minute rolls over
 //   anything else— idle for that long, then redraw
 //
-// A bool could not express "idle now, wake me in 3.2 s", which is precisely
-// what a blinking face is: ~140 ms of motion every few seconds. Saying
-// "static" between blinks would starve it of the frames the blink needs to
-// start — a static face gets only the ~2 frames/minute the minute roll and the
-// 60 s pixel shift produce. Saying "redraw always" would repaint the whole
-// 322 KB PSRAM canvas and re-flush it over QSPI at 30 fps, ~97% of it
-// redrawing an unchanged image, on the screen users leave open longest.
+// A bool could not express "idle now, wake me in 420 ms", which is precisely
+// what Prompt's blinking cursor is. Saying "static" between blinks would
+// starve it of the frames the blink needs — a static face gets only the ~2
+// frames/minute the minute roll and the 60 s pixel shift produce. Saying
+// "redraw always" would repaint the whole 322 KB PSRAM canvas and re-flush it
+// over QSPI at 30 fps, ~97% of it redrawing an unchanged image, on the screen
+// users leave open longest — to animate one 10x16 rectangle.
 //
 // This return value is load-bearing: ClockApp must honour it rather than
 // redrawing unconditionally.
