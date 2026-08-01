@@ -117,7 +117,7 @@ void ClockApp::render() {
   // Face name goes left, action hint goes right — footer()'s documented policy
   // is that `right` wins the space and `left` ellipsizes, and truncating the
   // hint would be the wrong failure. Measured: hint 106px, widest name
-  // ("Mood Cube") 91px, in a 328px band. Neither truncates.
+  // ("Segment") well under that, in a 328px band. Neither truncates.
   widgets::footer(gfx, clockfaces::name(id), "tap: next face", shiftX, shiftY);
 
   display->markDirty();
