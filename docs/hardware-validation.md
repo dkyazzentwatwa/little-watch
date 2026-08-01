@@ -333,3 +333,34 @@ that session; unchecked items were not exercised.
       (`git diff` on `AudioAdapter.cpp` is three pure additions and
       `RecorderService.cpp` is not in the changeset), not on hardware.
 - [ ] Burn-in soak: footers visibly drift over ~4 minutes on all six screens
+
+## Assistant — Responses API migration (2026-08-01)
+
+Verified on device over serial, with a key configured and Wi-Fi up.
+
+- [x] `POST /v1/responses` with `gpt-5.6-luna` returns 200 and parses. This
+      validates the three request fields that could not be confirmed against
+      any reachable spec beforehand: `max_output_tokens`, `reasoning:
+      {"effort": "none"}`, and `tool_choice: "auto"` alongside a built-in
+      `web_search` tool. None was rejected.
+- [x] The `output` array walk finds the answer text. The migration doc's own
+      example shows a `{"type":"reasoning"}` item FIRST, before the message,
+      so naive `output[0]` parsing would have returned empty — the
+      skip-non-message walk handles it.
+- [x] Search-triggering question produces a larger body than a conversational
+      one (4183 vs 3362 bytes), consistent with the tool engaging.
+- [x] **Internal heap holds steady across repeated exchanges.** Largest free
+      block settles after the first exchange and then holds:
+      43 KB -> 24 -> 24 -> 24, free 67 -> 65 -> 64 -> 64 KB. This is the check
+      that matters: the documented prior failure was a CONTINUOUS decline
+      (69 -> 52 -> 49, then esp-aes allocation failures). Sinking the response
+      body into PSRAM rather than an internal-RAM String is what this
+      confirms.
+- [x] A request while a reply is still playing is refused specifically
+      (`assistant busy or no key`), not generically
+- [ ] `response too large` path — not reachable with real answers (~3-4 KB
+      against a 64 KB buffer); contract-only
+- [ ] Spoken (microphone) path on the new endpoint — only the text path
+      (`assistant ask`) has been exercised
+- [ ] Whether web search materially improves answer accuracy for current-events
+      questions, vs the model answering from parametric knowledge
