@@ -322,7 +322,7 @@ void AudioApp::render() {
     const size_t first = page_ * kMaxListed + 1;
     char pager[48];
     if (listCount() > 0 && listTotal() > listCount()) {
-      snprintf(pager, sizeof(pager), "%u-%u of %u · swipe up/down", (unsigned)first,
+      snprintf(pager, sizeof(pager), "%u-%u of %u - swipe up/down", (unsigned)first,
                (unsigned)(first + listCount() - 1), (unsigned)listTotal());
     } else {
       const char* noun = isTrackScreen() ? "track" : (isRadioScreen() ? "station" : "recording");
@@ -352,7 +352,7 @@ void AudioApp::render() {
   if (isRadioScreen() && audio->isRadioPlaying()) {
     char rawStatus[228];
     snprintf(rawStatus, sizeof(rawStatus), "%s: %s%s%s", audio->radioStationName(),
-             audio->radioStatus(), audio->radioMetadata()[0] ? " · " : "",
+             audio->radioStatus(), audio->radioMetadata()[0] ? " - " : "",
              audio->radioMetadata());
     char status[128];
     clipToWidth(status, sizeof(status), rawStatus, w);

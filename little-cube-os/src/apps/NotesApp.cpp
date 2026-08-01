@@ -248,7 +248,7 @@ void NotesApp::renderList(Arduino_GFX& gfx) {
     }
     const NoteInfo& note = notes_[idx];
     char secondary[64];
-    snprintf(secondary, sizeof(secondary), "%s%s%u B", note.fromDeck ? "deck · " : "",
+    snprintf(secondary, sizeof(secondary), "%s%s%u B", note.fromDeck ? "deck - " : "",
              note.favorite ? "* " : "", (unsigned)note.sizeBytes);
     rowRects_[i] = widgets::listItem(gfx, theme::kPadding, y,
                                      DISPLAY_WIDTH - 2 * theme::kPadding, note.title,

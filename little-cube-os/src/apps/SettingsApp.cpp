@@ -297,8 +297,8 @@ void SettingsApp::renderWifi(Arduino_GFX& gfx) {
     strncpy(wifiRowSsids_[i], results[idx].ssid, sizeof(wifiRowSsids_[i]) - 1);
     wifiRowSsids_[i][sizeof(wifiRowSsids_[i]) - 1] = '\0';
     char secondary[48];
-    snprintf(secondary, sizeof(secondary), "%d dBm · %s%s", (int)results[idx].rssi,
-             results[idx].secure ? "locked" : "open", results[idx].saved ? " · saved" : "");
+    snprintf(secondary, sizeof(secondary), "%d dBm - %s%s", (int)results[idx].rssi,
+             results[idx].secure ? "locked" : "open", results[idx].saved ? " - saved" : "");
     wifiRowRects_[i] = widgets::listItem(gfx, theme::kPadding, y, w, results[idx].ssid,
                                          secondary, false);
     y += 62;
@@ -310,7 +310,7 @@ void SettingsApp::renderWifi(Arduino_GFX& gfx) {
     gfx.print(state.wifi == WifiState::Scanning ? "scanning..." : "tap Scan to find networks");
   } else {
     char pager[40];
-    snprintf(pager, sizeof(pager), "%u networks · swipe up/down", (unsigned)count);
+    snprintf(pager, sizeof(pager), "%u networks - swipe up/down", (unsigned)count);
     gfx.print(pager);
   }
 }

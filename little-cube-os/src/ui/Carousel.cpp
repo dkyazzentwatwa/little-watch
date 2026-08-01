@@ -61,7 +61,7 @@ const char* glanceFor(AppId id, Services& services, char* buf, size_t cap) {
     case AppId::Today:
       if (state != nullptr && state->batteryPresent && state->batteryPercent >= 0) {
         snprintf(buf, cap, "battery %d%%%s", state->batteryPercent,
-                 state->charging ? " · charging" : "");
+                 state->charging ? " - charging" : "");
         return buf;
       }
       return nullptr;
@@ -74,7 +74,7 @@ const char* glanceFor(AppId id, Services& services, char* buf, size_t cap) {
       if (!w.valid) {
         return state != nullptr && state->internet ? "fetching..." : "offline";
       }
-      snprintf(buf, cap, "%d°C · %s", roundC(w.temperatureC), w.condition);
+      snprintf(buf, cap, "%dC - %s", roundC(w.temperatureC), w.condition);
       return buf;
     }
 

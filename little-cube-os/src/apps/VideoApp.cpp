@@ -518,7 +518,7 @@ void VideoApp::renderChrome(Arduino_GFX& gfx) {
   // time-provable bound.
   char batt[20] = "";
   if (services_.state->batteryPercent >= 0) {
-    snprintf(batt, sizeof(batt), " · %d%%", services_.state->batteryPercent);
+    snprintf(batt, sizeof(batt), " - %d%%", services_.state->batteryPercent);
   }
   char times[64];
   if (volShownMs_ > 0) {
