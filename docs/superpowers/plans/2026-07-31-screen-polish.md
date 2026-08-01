@@ -78,6 +78,26 @@ Applies to every task below: **`render()` may draw, and nothing else.** Layout,
 encoding, pagination and any I/O belong in `onOpen()`, `onResume()` or
 `update(deltaMs)`.
 
+## ⚠️ Tasks 7-11 restyled: hacker/ASCII aesthetic
+
+After Tasks 5-6 shipped and were seen on hardware, the user asked for the ASCII
+hacker look to carry across the remaining screens. This **inverts part of the
+original goal** — the spec set out to migrate these six screens *to* the
+proportional FreeSans type system, matching the eight apps that already use it.
+Recorded so the contradiction is deliberate rather than accidental:
+
+- **Glance screens go monospace/ASCII** — Clock (done), Today, Weather. These
+  are read at a glance, so the 6x8 bitmap font costs nothing and the terminal
+  aesthetic is the point. Today becomes a `neofetch`-style system readout;
+  Weather becomes `wttr.in`-style ASCII art.
+- **Reading screens keep proportional body text** — News, Assistant, Recorder.
+  Article bodies, assistant answers and filenames are *read*, and the bitmap
+  font is materially worse for that. They get hacker framing (monospace labels,
+  rules, terminal-style headers) around proportional content.
+- **The `icons::` weather glyphs from Task 2 are NOT discarded.** ASCII art is
+  right for the Weather hero; a 16px vector glyph is right for a compact status
+  row on Today, where five lines of ASCII would not fit.
+
 ## How to verify in this repo
 
 **There is no unit-test suite and no host-side harness.** `CLAUDE.md` is explicit:
