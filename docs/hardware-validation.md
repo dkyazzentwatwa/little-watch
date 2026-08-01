@@ -291,3 +291,38 @@ that session; unchecked items were not exercised.
       than a 16:9 episode; picture never runs under the chrome strip
       (2026-07-31: a 480x360 season repacked to 310x414 — user-confirmed
       "screen full size now", ~1.5x the visible area of the padded 252x448)
+
+## Screen polish — Recorder and Assistant (Tasks 9, 11)
+
+**2026-07-31.**
+
+- [x] Recorder status line fits on one line and reads sensibly — was
+      `ready · ~16274 min left on ca` running 372 px on a 368 px panel, now
+      `ready - ~11 days left` at 246 px against 344 px available
+- [x] **Non-ASCII glyphs purged from on-screen strings.** The `FreeSans*`
+      faces contain only 0x20-0x7E, so the `·` in the Recorder's status line
+      rendered as garbage — the stray character visible in the user's first
+      photograph. The same middot was in on-screen strings in the Home
+      carousel, Audio, Video, Settings and Notes, and `Carousel.cpp` also
+      carried a `°`, so `26°C · Clear` was drawing two garbage glyphs on the
+      most-seen screen. All replaced with ASCII.
+- [ ] Assistant idle card shows the correct specific blocker (`no API key` /
+      `offline` / `no SD card` / `ready`) for the device's actual state
+- [ ] Assistant level meter tracks a real voice and decays (~2.5 s from full)
+- [ ] A long assistant answer pages with swipe up/down without truncating
+- [ ] `Back` during listening still cancels the take without sending
+- [ ] Recorder: last list row is not clipped by the taller footer band
+- [ ] Recorder: a long filename ellipsizes rather than running under the
+      delete button (`REC_20260731_235959.wav` measures 303 px against a
+      264 px row)
+
+### Not verifiable without specific conditions
+
+- [ ] Sub-zero temperatures agree across Weather, Today and the Home carousel
+      (the `roundC` consolidation) — needs a freezing day or a forced snapshot
+- [ ] `takeLivePeak()` does not disturb `recordPeak_`: record a quiet note and
+      confirm normalization still boosts it, and that the serial
+      `mic peak N/32767` report is unchanged. Verified by inspection
+      (`git diff` on `AudioAdapter.cpp` is three pure additions and
+      `RecorderService.cpp` is not in the changeset), not on hardware.
+- [ ] Burn-in soak: footers visibly drift over ~4 minutes on all six screens
