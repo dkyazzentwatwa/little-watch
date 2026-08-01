@@ -306,10 +306,17 @@ that session; unchecked items were not exercised.
       carousel, Audio, Video, Settings and Notes, and `Carousel.cpp` also
       carried a `°`, so `26°C · Clear` was drawing two garbage glyphs on the
       most-seen screen. All replaced with ASCII.
+- [x] Assistant renders and operates correctly on device (2026-07-31)
+- [x] **A long assistant answer pages with swipe up/down without truncating.**
+      This also validates the shared wrap-walker refactor behind it: pagination
+      and drawing now go through one implementation, verified beforehand
+      against the pre-refactor code over 40,320 cases (40 strings x 4 styles x
+      28 widths x 9 line caps) with zero mismatches. That refactor is used by
+      FilesApp, ContactsApp, NotesApp, SettingsApp, CalendarApp, ReaderApp,
+      VideoApp and NewsApp, so a regression would have been device-wide.
 - [ ] Assistant idle card shows the correct specific blocker (`no API key` /
-      `offline` / `no SD card` / `ready`) for the device's actual state
+      `offline` / `no SD card` / `ready`) for each of those states
 - [ ] Assistant level meter tracks a real voice and decays (~2.5 s from full)
-- [ ] A long assistant answer pages with swipe up/down without truncating
 - [ ] `Back` during listening still cancels the take without sending
 - [ ] Recorder: last list row is not clipped by the taller footer band
 - [ ] Recorder: a long filename ellipsizes rather than running under the

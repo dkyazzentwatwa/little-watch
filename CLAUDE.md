@@ -104,9 +104,32 @@ Key contracts:
   Brightness is an AMOLED command (0 = panel off) — there is no backlight.
   Persistent chrome must offset by `AmoledProtection::shiftX()/shiftY()` (burn-in
   defense is a hard requirement, spec §37).
+- **Text rendering has three rules that are not obvious and have each caused a
+  visible bug:**
+  - **On-screen strings must be pure ASCII (0x20–0x7E).** The `FreeSans*` faces
+    contain nothing else, so a `·` or `°` draws as a garbage glyph. Serial
+    output is exempt — a terminal handles UTF-8 fine.
+  - **The built-in 6x8 font is a 256-glyph CP437 set** and *does* have a degree
+    at `0xF8` — which is why the monospace screens can use it and the
+    proportional ones cannot. But its `|` (`0x7C`) is a **broken bar** (rows 3
+    and 7 blank), so it cannot form a continuous vertical across stacked rows;
+    `0xB3` is the only full-height solid column.
+  - **`widgets::textWidth()` measures with wrapping disabled.** `getTextBounds()`
+    otherwise folds long strings and silently under-reports, which is wrong in
+    the unsafe direction for every centering and clamping decision.
+- **Bottom chrome goes through `widgets::footer()`**, never a hand-placed
+  `setCursor(kPadding, DISPLAY_HEIGHT - N)`. `kPadding` (12) sits inside the
+  bezel's corner radius at the bottom of the panel and clips; `kSafeInset` (20)
+  clears it, confirmed on device. `footer()` also applies the burn-in offsets
+  that every hand-placed footer was missing.
 - **`SystemState`** is the shared status snapshot with a `version` counter; apps
   compare `lastStateVersion_` to decide whether to redraw. Bump `version` only when
   something actually changed.
+  - ⚠️ **`render()` is NOT called once per screen entry.** `version` moves on a
+    timer — every 60 s from the AMOLED pixel shift, and again each clock minute —
+    so a screen left open re-renders 1–2×/min forever. **`render()` may draw and
+    nothing else**: layout, pagination, encoding and I/O belong in `onOpen()`,
+    `onResume()` or `update(deltaMs)`.
 - **`EventBus`** is synchronous — handlers run inline on the publisher's call, so
   they must be fast. Services publish `SystemEvent`s instead of poking unrelated UI.
 - **Everything degrades**: boot must succeed with no Wi-Fi and no SD card. SD state
