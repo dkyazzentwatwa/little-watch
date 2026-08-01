@@ -122,6 +122,65 @@ uint8_t countLines(Arduino_GFX& gfx, const char* s, int16_t w, TextStyle style,
   return lines;
 }
 
+// widgets::textBlock clips at maxLines with no marker, so a question that runs
+// past its budget just stops mid-word and reads as a rendering fault. Rewrite
+// the buffer in place so the last surviving line ends in "..." — and shrink
+// that line until the ellipsis fits, or it would wrap onto a line the cap then
+// throws away, taking the marker with it.
+void ellipsizeToLines(Arduino_GFX& gfx, char* s, size_t cap, int16_t w, TextStyle style,
+                      uint8_t maxLines) {
+  if (s == nullptr || s[0] == '\0' || w <= 0 || maxLines == 0 || cap < 8) {
+    return;
+  }
+  const size_t len = strlen(s);
+  size_t pos = 0;
+  size_t lastLineStart = 0;
+  uint8_t lines = 0;
+  while (pos < len && lines < maxLines) {
+    lastLineStart = pos;
+    const size_t adv = widgets::measureBlock(gfx, s + pos, w, style, 1);
+    if (adv == 0) {
+      break;
+    }
+    pos += adv;
+    lines++;
+  }
+  if (pos >= len) {
+    return;  // the whole string fits; nothing to mark
+  }
+
+  char line[136];  // the walker's own line buffer is 128, plus "..." and NUL
+  size_t take = pos - lastLineStart;
+  if (take > sizeof(line) - 4) {
+    take = sizeof(line) - 4;
+  }
+  while (take > 0) {
+    memcpy(line, s + lastLineStart, take);
+    line[take] = '\0';
+    while (take > 0 && line[take - 1] == ' ') {
+      take--;  // a trailing space would push the ellipsis out on its own
+      line[take] = '\0';
+    }
+    if (take == 0) {
+      break;
+    }
+    strcat(line, "...");  // safe: take <= sizeof(line) - 4
+    if (widgets::textWidth(gfx, line, style) <= w) {
+      break;
+    }
+    take--;
+  }
+  if (take == 0) {
+    return;  // nothing survives alongside the marker; leave the clip unmarked
+  }
+  size_t end = lastLineStart + take;
+  if (end + 4 > cap) {
+    end = cap - 4;
+  }
+  s[end] = '\0';
+  strcat(s, "...");
+}
+
 }  // namespace
 
 void AssistantApp::onOpen() {
@@ -173,6 +232,9 @@ void AssistantApp::layout() {
   // one; with no answer (every failure path) it gets room to show in full.
   const uint8_t qCap = answer_[0] != '\0' ? 2 : 4;
   const int16_t qMaxInner = kQuestionMaxW - 2 * kBubblePadX;
+  // Safe to mutate: foldAscii() rebuilt question_ from the service above, so
+  // the ellipsis never compounds across layouts.
+  ellipsizeToLines(gfx, question_, sizeof(question_), qMaxInner, TextStyle::Caption, qCap);
   qLines_ = countLines(gfx, question_, qMaxInner, TextStyle::Caption, qCap);
   qY_ = y;
   qW_ = 0;
@@ -285,10 +347,15 @@ void AssistantApp::update(uint32_t deltaMs) {
       meterMs_ = 0;
       uint8_t target = 0;
       if (services_.audio != nullptr) {
-        // recordedPeak() is |sample| 0..32767. Square-rooted, because a linear
-        // bar barely leaves the left edge: conversational speech through this
-        // mic chain peaks around 2000-8000 before the stop-time normalize.
-        const uint32_t peak = services_.audio->recordedPeak();
+        // takeLivePeak() is the loudest |sample| (0..32767) since the previous
+        // call — i.e. over this 100 ms window — and consumes it. NOT
+        // recordedPeak(): that is the take's running maximum, it never falls,
+        // and it is load-bearing for the stop-time normalize gain.
+        //
+        // Square-rooted, because a linear bar barely leaves the left edge:
+        // conversational speech through this mic chain peaks around 2000-8000
+        // before the normalize.
+        const uint32_t peak = services_.audio->takeLivePeak();
         const float norm = static_cast<float>(peak) / 32767.0f;
         target = static_cast<uint8_t>(sqrtf(norm) * 100.0f + 0.5f);
         if (target > 100) {
@@ -296,10 +363,7 @@ void AssistantApp::update(uint32_t deltaMs) {
         }
       }
       // Attack instantly, decay slowly: a meter that falls as fast as it rises
-      // reads as noise. NOTE the source is a per-take RUNNING PEAK (reset by
-      // startRecordWav, never decremented while the take runs), so in practice
-      // the bar climbs and holds — the decay only unwinds between takes. That
-      // is deliberate: reading it live would mean touching the capture path.
+      // reads as noise. 4 points per 100 ms tick is a ~2.5 s fall from full.
       uint8_t next = level_;
       if (target > next) {
         next = target;

@@ -303,6 +303,12 @@ void audioRecordTask(void* arg) {
       if (a > self->recordPeak_) {
         self->recordPeak_ = static_cast<uint16_t>(a);
       }
+      // Same max, separate field: livePeak_ is consumed (and zeroed) by
+      // takeLivePeak() for UI meters. recordPeak_ must stay the take's true
+      // running maximum — the stop-time normalize gain divides by it.
+      if (a > self->livePeak_) {
+        self->livePeak_ = static_cast<uint16_t>(a);
+      }
     }
     const size_t remaining = recPcmCapacity - self->recordedBytes_;
     const size_t copyBytes = monoBytes < remaining ? monoBytes : remaining;
@@ -915,6 +921,7 @@ bool AudioAdapter::startRecordWav(const char* path, uint32_t sampleRate) {
   }
   recordedBytes_ = 0;
   recordPeak_ = 0;
+  livePeak_ = 0;  // a new take starts the meter clean
   recordFailed_ = false;
   recordPaused_ = false;
   stopRec_ = false;
@@ -981,6 +988,16 @@ bool AudioAdapter::waitIdle(uint32_t timeoutMs) {
     delay(5);
   }
   return false;
+}
+
+uint16_t AudioAdapter::takeLivePeak() {
+  // Read then zero. Not atomic as a pair: a sample the capture task writes
+  // between the two lines is dropped. Deliberate — see the header. Never
+  // touch recordPeak_ here; the normalize gain and the silent-take report
+  // both depend on it staying the take's true maximum.
+  const uint16_t peak = livePeak_;
+  livePeak_ = 0;
+  return peak;
 }
 
 uint32_t AudioAdapter::recordedMs() const {

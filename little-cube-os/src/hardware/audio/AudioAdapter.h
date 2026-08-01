@@ -126,6 +126,22 @@ class AudioAdapter {
   // Loudest |sample| seen during the last recording (0..32767). ~0 with
   // bytes > 0 means the mic captured silence; used to diagnose the mic path.
   uint16_t recordedPeak() const { return recordPeak_; }
+  // Peak since the last call, then reset — a LIVE level for UI meters.
+  //
+  // Deliberately separate from recordedPeak(): that one is the take's running
+  // maximum and is load-bearing for the normalization gain (AudioAdapter.cpp
+  // computes gainQ15 from it at stop time) and for the silent-take report
+  // (RecorderService.cpp). A consuming read of it would silently break both —
+  // quiet voice notes would stop being boosted and nobody would trace it back
+  // to a cosmetic meter. This field exists so a meter can consume without
+  // disturbing them.
+  //
+  // Called from the LOOP TASK while the capture task writes the field. A
+  // uint16_t is a single naturally-aligned word on this core, so a torn read
+  // is impossible; the read-then-zero is not atomic as a pair, so a sample's
+  // worth of peak can be lost between the two. That is fine for a meter and
+  // is why there is no mutex here — do not "fix" it with one.
+  uint16_t takeLivePeak();
   uint32_t recordedMs() const;
 
   // Capture post-processing on the PSRAM spool before the SD write (serial:
@@ -190,6 +206,7 @@ class AudioAdapter {
   volatile bool recGate_ = true;
   volatile uint32_t recordedBytes_ = 0;
   volatile uint16_t recordPeak_ = 0;
+  volatile uint16_t livePeak_ = 0;  // consumed by takeLivePeak(); see above
 
   volatile bool playCompleted_ = false;  // last play ended naturally, not stopped
 
