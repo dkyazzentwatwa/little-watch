@@ -172,11 +172,33 @@ remain unverified until Task 5 puts a face on screen.
 - [x] `settings set clockface 9` is refused with
       `usage: settings set clockface <0-5>` and leaves the stored value
       untouched — enumerated keys reject rather than clamp (2026-07-31)
-- [ ] Face selection survives a reboot **through the UI** (tap to cycle, not
-      serial) — needs Task 5
 - [ ] The unchanged-value early return actually suppresses an NVS write
       (needs an erase-count probe or a long soak; the serial round-trip above
       cannot distinguish a skipped write from a performed one)
+
+## Screen polish — clock faces (Task 5)
+
+**2026-07-31, photographed on device.**
+
+- [x] **`kSafeInset = 20` clears the bezel corner radius.** The footer's left
+      caption and right hint are both fully legible at the bottom of the
+      panel, unclipped. This was the load-bearing prose assumption behind
+      every footer on all six screens, and it had never been tested — there is
+      still no measured corner-radius constant in the codebase, but the
+      geometry is now confirmed adequate at this inset.
+- [x] Footer renders with a hairline rule, left status and right hint, and
+      neither string truncates at the widths in use
+- [x] `kTextDim` footer text is legible on the **Matrix** palette — the worst
+      of the ten at 3.50:1 against `kBg`. The earlier `kPanelAlt` text on the
+      same screen was invisible; this is the fix confirmed.
+- [x] Tap cycles faces; the name updates in the footer each tap
+- [x] Digital, Stacked and Words all render; Words wraps rather than clipping
+      (`"quarter past twelve"` fits one line in `Title`)
+- [x] Blinky / Big Eyes / Mood Cube fall back to Digital while showing their
+      own name, as designed pending Task 6
+- [ ] Face selection survives a reboot **through the UI** (tap to cycle, then
+      reboot) — the serial round-trip is verified above, the tap path is not
+- [ ] Screen still dims and blanks on the normal timeout with a face open
 
 ## Video (FEATURE_VIDEO)
 
