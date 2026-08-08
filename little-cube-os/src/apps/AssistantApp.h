@@ -79,6 +79,8 @@ class AssistantApp : public App {
   uint32_t lastStateVersion_ = 0;
   uint32_t tickMs_ = 0;
   uint32_t meterMs_ = 0;
+  uint32_t animationMs_ = 0;
+  uint8_t animationFrame_ = 0;
   uint8_t level_ = 0;  // 0..100, the drawn mic bar
   bool needsLayout_ = true;
   bool dirty_ = true;

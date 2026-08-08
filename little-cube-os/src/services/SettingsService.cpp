@@ -30,10 +30,13 @@ constexpr const char* kKeyVolume = "volume";
 constexpr const char* kKeyTheme = "theme";
 constexpr const char* kKeyClockFace = "clockface";
 constexpr const char* kKeyOpenaiKey = "aikey";
+constexpr const char* kKeyAssistantBackend = "aimode";
 // NVS keys are limited to 15 characters.
 constexpr const char* kKeyMicGain = "micgain";
 constexpr const char* kKeyRecNormalize = "recnorm";
 constexpr const char* kKeyRecGate = "recgate";
+// NVS keys are limited to 15 characters.
+constexpr const char* kKeyVideoOrient = "videoOrient";
 // NVS keys are limited to 15 characters.
 constexpr const char* kKeyBedtimeOn = "bedOn";
 constexpr const char* kKeyBedtimeStart = "bedStart";
@@ -113,6 +116,12 @@ void SettingsService::setOpenaiKey(const String& value) {
   prefs.putString(kKeyOpenaiKey, openaiKey_);
 }
 
+void SettingsService::setAssistantBackend(AssistantBackend value) {
+  assistantBackend_ =
+      value == AssistantBackend::Realtime ? AssistantBackend::Realtime : AssistantBackend::Api;
+  prefs.putUChar(kKeyAssistantBackend, static_cast<uint8_t>(assistantBackend_));
+}
+
 void SettingsService::load() {
   brightness_ = clampBrightness(prefs.getUChar(kKeyBrightness, DEFAULT_BRIGHTNESS));
   screenTimeoutSec_ = clampTimeout(prefs.getUInt(kKeyScreenTimeout, kDefaultScreenTimeoutSec));
@@ -129,6 +138,11 @@ void SettingsService::load() {
   weatherLat_ = prefs.getFloat(kKeyWeatherLat, 0.0f);
   weatherLon_ = prefs.getFloat(kKeyWeatherLon, 0.0f);
   openaiKey_ = prefs.getString(kKeyOpenaiKey, "");
+  const uint8_t storedAssistantBackend =
+      prefs.getUChar(kKeyAssistantBackend, static_cast<uint8_t>(AssistantBackend::Api));
+  assistantBackend_ = storedAssistantBackend == static_cast<uint8_t>(AssistantBackend::Realtime)
+                          ? AssistantBackend::Realtime
+                          : AssistantBackend::Api;
   micGain_ = prefs.getUChar(kKeyMicGain, 7);
   if (micGain_ > 7) {
     micGain_ = 7;
@@ -155,6 +169,15 @@ void SettingsService::load() {
   if (clockFace_ >= clockfaces::kFaceCount) {
     clockFace_ = 0;
   }
+  // Default Upright, matching the in-class initializer. Anything that is not
+  // a value this firmware defines (a newer build's third mode, or a corrupt
+  // record) falls back to the default rather than to Rotated — untrusted NVS
+  // data, so the clamp is silent.
+  const uint8_t storedOrient =
+      prefs.getUChar(kKeyVideoOrient, static_cast<uint8_t>(VideoOrientation::Upright));
+  videoOrientation_ = storedOrient == static_cast<uint8_t>(VideoOrientation::Rotated)
+                          ? VideoOrientation::Rotated
+                          : VideoOrientation::Upright;
   bedtimeEnabled_ = prefs.getBool(kKeyBedtimeOn, false);
   bedtimeStartMin_ = clampMinutes(prefs.getUShort(kKeyBedtimeStart, 22 * 60), 22 * 60);
   bedtimeEndMin_ = clampMinutes(prefs.getUShort(kKeyBedtimeEnd, 7 * 60), 7 * 60);
@@ -198,6 +221,17 @@ void SettingsService::setWeatherLocation(const String& city, float lat, float lo
 void SettingsService::setVolumePercent(uint8_t value) {
   volumePercent_ = clampVolume(value);
   prefs.putUChar(kKeyVolume, volumePercent_);
+}
+
+// Unconditional write-through, not setThemeIndex's unchanged-value early
+// return: the default here is Upright rather than the zero value, and an
+// early return would drop a genuine first-boot write of the default back to
+// itself. Toggling orientation is a deliberate tap, never an idle re-set, so
+// there is no flash-wear reason to want the early return.
+void SettingsService::setVideoOrientation(VideoOrientation value) {
+  videoOrientation_ =
+      value == VideoOrientation::Rotated ? VideoOrientation::Rotated : VideoOrientation::Upright;
+  prefs.putUChar(kKeyVideoOrient, static_cast<uint8_t>(videoOrientation_));
 }
 
 void SettingsService::setThemeIndex(uint8_t value) {

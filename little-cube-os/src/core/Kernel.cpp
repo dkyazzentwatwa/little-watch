@@ -381,7 +381,7 @@ void kernelSetup() {
   radioService.begin(&sdStorage);
 #if FEATURE_VIDEO
   videoService.begin(&sdStorage);  // pull-only, no update() slot
-  videoPlayer.begin(&audioAdapter, &displayAdapter, &sdStorage);
+  videoPlayer.begin(&audioAdapter, &displayAdapter, &sdStorage, &settingsService);
 #endif
   recorderService.begin(&audioAdapter, &sdCardAdapter, &sdStorage, &eventBus, &systemState);
   assistantService.begin(&audioAdapter, &wifiService, &settingsService, &sdStorage,

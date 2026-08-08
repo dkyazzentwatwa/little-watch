@@ -292,6 +292,83 @@ that session; unchecked items were not exercised.
       (2026-07-31: a 480x360 season repacked to 310x414 — user-confirmed
       "screen full size now", ~1.5x the visible area of the padded 252x448)
 
+## Video orientation (upright / rotated)
+
+Everything checked in the section above was verified in what is now **Rotated**
+mode, which is no longer the default — re-reach it with
+`settings set videoorient rotated` before re-running any of those items.
+
+Verified on the computer only (no cube involved, so these carry): all four
+combinations of {16:9, 4:3} x {upright, rotated} pack and pass
+`scripts/lcv_mux.py inspect`; upright stores 368x208 (16:9) and 368x276 (4:3),
+rotated is unchanged at 252x448 and 310x414; header byte 40 reads 0 for rotated
+and 1 for upright; a file with byte 40 forced to 0 (what every older packer
+wrote) still inspects `OK` as rotated; byte 40 = 2 and an upright-sized frame
+mislabelled rotated are both rejected `INVALID`.
+
+**2026-08-01 session** — flashed and driven over serial against the existing
+4:3 `HXH 1999` library (all packed by the old packer, so orientation byte 0 =
+rotated). Measured on the same episode, same device, back to back:
+
+| path | `video status` | shown | dropped | rate |
+|---|---|---|---|---|
+| fast (1:1) | `rotated->rotated 310x414@(0,17)` | 234 | 12 | ~95% |
+| rotating | `rotated->upright 368x275@(0,18) ROTATING` | 192 | 30 | ~86% |
+
+So the runtime rotate costs ~10 points of frame rate on the 4:3 worst case
+(368x275 = 101k destination pixels/frame). User watched it and accepted the
+smoothness; audio was unaffected, as designed — frames drop against the audio
+clock. Re-packing with `--upright` avoids the cost entirely by restoring the
+1:1 path.
+
+- [x] Fresh NVS: `settings get videoorient` reads `upright` (device had no
+      prior key; read back `upright` on first boot of the new firmware)
+- [x] `settings set videoorient rotated`, reboot, still `rotated`; set back to
+      `upright`, reboot, still `upright` (the write-through / first-boot check
+      — both directions confirmed, `uptime` used to prove the reboot happened)
+- [x] `settings list` includes `videoorient`
+- [x] **Rotated file in Upright mode — the compatibility path.** Picture reads
+      the same way up as Home, whole frame visible, letterboxed, NOT mirrored
+      and not 180 degrees off — user-confirmed "upright and correct" /
+      "looks perfect"
+- [x] `video status` shows `rotated->upright` and `ROTATING`; the geometry it
+      prints (`310x414 -> 368x275@(0,18)`) matches the off-device simulation of
+      the blit exactly
+- [x] Colors correct in the rotating path — it bypasses `draw16bitRGBBitmap`
+      and writes RGB565 into the framebuffer directly, so the endianness
+      assumption is re-tested here; no swap reported
+- [x] Frame rate measured on the 4:3 worst case (table above)
+
+Still unverified on the cube:
+
+- [ ] Settings > Video: both buttons work, the active one is highlighted, and
+      the root menu's seventh row is fully on-panel and hittable (rows were
+      tightened from 48/56 to 44/50 to fit — check the last row clears the
+      bottom corner radius)
+- [ ] 16:9 source in the rotating path (368x207 — 25% fewer destination pixels
+      than the 4:3 case measured above, so it should run better)
+- [ ] No stripe or seam anywhere in the rotating path's picture, especially at
+      the right-hand edge (that edge is the `iWidthUsed` boundary)
+- [ ] Letterbox bars stay black across a scene change (any flicker means
+      blanking is running per frame instead of once at playback start)
+- [ ] Natively-upright file in Upright mode: `video status` shows
+      `upright->upright` with no `ROTATING`, and it is visibly the smoother of
+      the two. Blocked in the 2026-08-01 session: there is no way to put a file
+      on the card over serial, and the card held only old rotated episodes
+- [ ] Upright file in Rotated mode (the other mismatch direction) rotates the
+      opposite way and is still right way up
+- [ ] Upright chrome: all six buttons hit first time; the footer title
+      truncates with an ellipsis and the time is right-aligned; the band
+      auto-hides in ~4 s and blanks cleanly; nothing clips into the bottom
+      corner radius
+- [ ] Upright scrub: tapping at 25/50/75% across the bar seeks to 25/50/75%
+- [ ] Upright gestures: swipe right/left seeks +/-15 s, swipe up/down changes
+      volume. Rotated gestures unchanged from the section above
+- [ ] Leave the upright chrome visible 3+ minutes: it drifts with the burn-in
+      offsets and leaves no ghost of the previous footer rule
+- [ ] An untouched pre-existing `.lcv` still on the card plays identically to
+      before in Rotated mode
+
 ## Screen polish — Recorder and Assistant (Tasks 9, 11)
 
 **2026-07-31.**

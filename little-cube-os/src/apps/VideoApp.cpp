@@ -8,6 +8,7 @@
 #include "../hardware/DisplayAdapter.h"
 #include "../hardware/SdCardState.h"
 #include "../hardware/audio/AudioAdapter.h"
+#include "../services/SettingsService.h"
 #include "../storage/StoragePaths.h"
 #include "../ui/AmoledProtection.h"
 #include "../ui/Theme.h"
@@ -20,13 +21,62 @@ void VideoApp::onOpen() {
   page_ = 0;
   pageAnchors_[0][0] = '\0';
   refreshList();
-  if (chrome_ == nullptr) {
-    chrome_ = new Arduino_Canvas(kChromeW, kChromeH, nullptr);
-    chrome_->begin(GFX_SKIP_OUTPUT_BEGIN);
-  }
+  syncChromeBuffer();
   dirty_ = true;
 
   adoptExternalPlayback();
+}
+
+// The Rotated path needs a 448x58 scratch canvas to draw landscape text into
+// before transposing it onto the vertical strip; Upright draws straight into
+// the frame canvas and needs nothing. Allocating ~52 KB is real work, so it
+// happens here — on open, on resume and at playback start — and NEVER in
+// render(), which may draw and nothing else.
+void VideoApp::syncChromeBuffer() {
+  const bool wantsBuffer = services_.settings == nullptr ||
+                           services_.settings->videoOrientation() == VideoOrientation::Rotated;
+  if (wantsBuffer && chrome_ == nullptr) {
+    chrome_ = new Arduino_Canvas(kChromeW, kChromeH, nullptr);
+    if (chrome_ != nullptr && !chrome_->begin(GFX_SKIP_OUTPUT_BEGIN)) {
+      delete chrome_;
+      chrome_ = nullptr;  // out of memory; renderChrome() degrades to no chrome
+    }
+  } else if (!wantsBuffer && chrome_ != nullptr) {
+    delete chrome_;
+    chrome_ = nullptr;
+  }
+}
+
+bool VideoApp::uprightMode() const {
+  const VideoPlayer* player = services_.videoPlayer;
+  return player != nullptr && player->activeOrientation() == VideoOrientation::Upright;
+}
+
+void VideoApp::stepVolume(bool up) {
+  const uint8_t cur = services_.audio->volumePercent();
+  services_.audio->setVolumePercent(up ? (cur >= 90 ? 100 : cur + 10)
+                                       : (cur <= 10 ? 0 : cur - 10));
+  volShownMs_ = kVolShowMs;
+  chromeDirty_ = true;
+}
+
+// Rotated asks the user to turn the device CCW, so an in-hand horizontal
+// swipe arrives as portrait Up/Down and an in-hand vertical one as Left/Right.
+// Upright is worn and never turned, so the panel axes are the user's axes.
+VideoApp::Gesture VideoApp::gestureFor(InputAction action) const {
+  const bool upright = uprightMode();
+  switch (action) {
+    case InputAction::SwipeUp:
+      return upright ? Gesture::VolumeUp : Gesture::SeekBack;
+    case InputAction::SwipeDown:
+      return upright ? Gesture::VolumeDown : Gesture::SeekForward;
+    case InputAction::SwipeLeft:
+      return upright ? Gesture::SeekBack : Gesture::VolumeDown;
+    case InputAction::SwipeRight:
+      return upright ? Gesture::SeekForward : Gesture::VolumeUp;
+    default:
+      return Gesture::None;
+  }
 }
 
 void VideoApp::onClose() {
@@ -40,6 +90,10 @@ void VideoApp::onPause() { stopAndSavePosition(); }
 void VideoApp::onResume() {
   screen_ = Screen::Library;
   refreshList();
+  // The user may have just come back from the Settings screen that owns the
+  // orientation — this is the only moment it can change while this app lives,
+  // because onPause() stops playback whenever the app is backgrounded.
+  syncChromeBuffer();
   dirty_ = true;
 }
 
@@ -75,13 +129,14 @@ void VideoApp::adoptExternalPlayback() {
   strncpy(pendingPath_, player->path(), sizeof(pendingPath_) - 1);
   pendingPath_[sizeof(pendingPath_) - 1] = '\0';
   player->setUiActive(true);
+  syncChromeBuffer();  // the adopted playback picked its own orientation
   screen_ = Screen::Player;
   chromeVisible_ = true;
   chromeDirty_ = true;
   chromeMs_ = 0;
   saveMs_ = 0;
   wasPlaying_ = true;
-  // The decoder only writes the centered band; blank the margins once.
+  // The decoder only writes the fitted picture rect; blank the margins once.
   services_.display->canvas()->fillScreen(RGB565_BLACK);
   services_.display->markDirty();
 }
@@ -163,15 +218,18 @@ void VideoApp::beginPlayback(uint32_t startMs) {
     return;
   }
   player->setUiActive(true);
+  // play() has just resolved the picture layout from the setting, so this is
+  // the moment the chrome buffer's need is settled for this playback.
+  syncChromeBuffer();
   screen_ = Screen::Player;
   chromeVisible_ = true;
   chromeDirty_ = true;
   chromeMs_ = 0;
   saveMs_ = 0;
   wasPlaying_ = true;
-  // Full black once; the decoder owns the image area from here on. The
-  // decoder only ever writes the centered 252-wide band, so this is the
-  // only place the margins get blanked before playback starts.
+  // Full black once; the decoder owns the image area from here on. It only
+  // ever writes the fitted, centered picture rect, so this is the only place
+  // the letterbox margins get blanked — never per frame.
   services_.display->canvas()->fillScreen(RGB565_BLACK);
   services_.display->markDirty();
 }
@@ -463,20 +521,120 @@ void VideoApp::renderPlayer(Arduino_GFX& gfx) {
     return;
   }
   chromeDirty_ = false;
-  const int16_t stripX = DISPLAY_WIDTH - kChromeH;  // 310
+  const bool upright = uprightMode();
   if (!chromeVisible_) {
-    gfx.fillRect(stripX, 0, kChromeH, DISPLAY_HEIGHT, RGB565_BLACK);
+    if (upright) {
+      gfx.fillRect(0, DISPLAY_HEIGHT - kUprightChromeH, DISPLAY_WIDTH, kUprightChromeH,
+                   RGB565_BLACK);
+    } else {
+      gfx.fillRect(DISPLAY_WIDTH - kChromeH, 0, kChromeH, DISPLAY_HEIGHT, RGB565_BLACK);
+    }
     services_.display->markDirty();
     return;
   }
-  renderChrome(gfx);
+  if (upright) {
+    renderChromeUpright(gfx);
+  } else {
+    renderChrome(gfx);
+  }
   services_.display->markDirty();
+}
+
+// The readout both layouts show, right of their scrub area.
+void VideoApp::formatReadout(char* out, size_t len) const {
+  const VideoPlayer* player = services_.videoPlayer;
+  if (player == nullptr) {
+    out[0] = '\0';
+    return;
+  }
+  if (volShownMs_ > 0) {
+    // Sized for %u's worst case (uint8_t, 3 digits) — well under 64.
+    snprintf(out, len, "vol %u%%", static_cast<unsigned>(services_.audio->volumePercent()));
+    return;
+  }
+  char pos[16];
+  char dur[16];
+  formatMs(player->positionMs(), pos, sizeof(pos));
+  formatMs(player->durationMs(), dur, sizeof(dur));
+  // Sized for %d's worst case (a full signed 32-bit range), not the ~0-100
+  // the field actually holds, so -Wformat-truncation has nothing to warn
+  // about — batteryPercent's declared type is a plain int with no compile-
+  // time-provable bound.
+  char batt[20] = "";
+  if (services_.state->batteryPercent >= 0) {
+    snprintf(batt, sizeof(batt), " - %d%%", services_.state->batteryPercent);
+  }
+  snprintf(out, len, "%s / %s%s", pos, dur, batt);
+}
+
+// Upright chrome: a horizontal strip along the bottom, drawn STRAIGHT into
+// the frame canvas. The only reason renderChrome() needs its own canvas is to
+// draw landscape text and then turn it; here the text is already the right
+// way up, so there is nothing to transpose and no buffer to hold it in. Hit
+// rects therefore come back from widgets::button() already in portrait space.
+//
+// The band is 136 tall from y=312, in three rows: scrub, buttons, then
+// widgets::footer() for the title and time readout. footer() owns the bottom
+// of the panel deliberately — it is the only thing that gets the corner-radius
+// inset and the burn-in offsets right (CLAUDE.md), and hand-placing text down
+// there is the exact bug it exists to prevent.
+void VideoApp::renderChromeUpright(Arduino_GFX& gfx) {
+  VideoPlayer* player = services_.videoPlayer;
+  if (player == nullptr) {
+    return;
+  }
+  const int16_t top = DISPLAY_HEIGHT - kUprightChromeH;  // 312
+  // Unshifted, so shifted content inside it still lands within the band.
+  gfx.fillRect(0, top, DISPLAY_WIDTH, kUprightChromeH, RGB565_BLACK);
+
+  const int16_t sx = theme::kSafeInset;
+  const int16_t sw = DISPLAY_WIDTH - 2 * theme::kSafeInset;  // 328
+
+  // Row 1: scrub bar, drawn 6px thin with a 30px touch band around it. A 6px
+  // target is unhittable, and a hit rect is not ink, so it can be generous
+  // where the drawing cannot.
+  const int16_t barY = top + 18;  // 330
+  gfx.fillRect(sx, barY, sw, 6, theme::kPanelAlt);
+  if (player->durationMs() > 0) {
+    const int16_t fill = static_cast<int16_t>(
+        static_cast<int64_t>(sw) * player->positionMs() / player->durationMs());
+    gfx.fillRect(sx, barY, fill, 6, theme::kAccent);
+  }
+  scrubRect_ = {sx, static_cast<int16_t>(top + 6), sw, 30};
+
+  // Row 2: the same six buttons as landscape, same order, spread across the
+  // safe width. 6*48 + 5*8 = 328 = DISPLAY_WIDTH - 2*kSafeInset exactly.
+  struct Btn {
+    const char* label;
+    widgets::Rect* rect;
+  };
+  const char* playLabel = player->paused() ? ">" : "||";
+  static constexpr int16_t kBtnW = 48;
+  static constexpr int16_t kBtnGap = 8;
+  Btn btns[6] = {{"<-", &backRect_},  {"|<", &prevRect_},   {playLabel, &playRect_},
+                 {">|", &nextRect_}, {"-", &volDownRect_}, {"+", &volUpRect_}};
+  int16_t bx = sx;
+  for (auto& b : btns) {
+    *b.rect = widgets::button(gfx, bx, top + 40, kBtnW, 48, b.label);  // 352..400
+    bx += kBtnW + kBtnGap;
+  }
+
+  // Row 3: title and readout. footer() truncates the left with an ellipsis
+  // when the two would collide — the rule the rotated path open-codes.
+  char times[64];
+  formatReadout(times, sizeof(times));
+  const char* leaf = strrchr(pendingPath_, '/');
+  leaf = leaf != nullptr ? leaf + 1 : pendingPath_;
+  widgets::footer(gfx, leaf, times, services_.amoled->shiftX(), services_.amoled->shiftY());
 }
 
 void VideoApp::renderChrome(Arduino_GFX& gfx) {
   VideoPlayer* player = services_.videoPlayer;
-  if (chrome_ == nullptr || player == nullptr) {
+  if (player == nullptr) {
     return;
+  }
+  if (chrome_ == nullptr) {
+    return;  // syncChromeBuffer() could not get one; the picture still plays
   }
   // 1) Draw the chrome in LANDSCAPE into the 448x58 canvas using the normal
   //    text helpers. Layout left->right: back, prev, play/pause, next,
@@ -508,26 +666,8 @@ void VideoApp::renderChrome(Arduino_GFX& gfx) {
   // Scrub bar in the remaining width.
   const int16_t sx = bx + 4;
   const int16_t sw = kChromeW - theme::kSafeInset - sx;
-  char pos[16];
-  char dur[16];
-  formatMs(player->positionMs(), pos, sizeof(pos));
-  formatMs(player->durationMs(), dur, sizeof(dur));
-  // Sized for %d's worst case (a full signed 32-bit range), not the ~0-100
-  // the field actually holds, so -Wformat-truncation has nothing to warn
-  // about — batteryPercent's declared type is a plain int with no compile-
-  // time-provable bound.
-  char batt[20] = "";
-  if (services_.state->batteryPercent >= 0) {
-    snprintf(batt, sizeof(batt), " - %d%%", services_.state->batteryPercent);
-  }
   char times[64];
-  if (volShownMs_ > 0) {
-    // Sized for %u's worst case (uint8_t, 3 digits) — well under 64.
-    snprintf(times, sizeof(times), "vol %u%%",
-             static_cast<unsigned>(services_.audio->volumePercent()));
-  } else {
-    snprintf(times, sizeof(times), "%s / %s%s", pos, dur, batt);
-  }
+  formatReadout(times, sizeof(times));
   // Episode title beside the time readout, same row, splitting the scrub
   // area's width rather than reworking the 58px-tall layout: the time text
   // moves from centered to right-aligned, and the title fills whatever's
@@ -608,12 +748,7 @@ bool VideoApp::playerInput(const InputEvent& event) {
         return true;
       }
       if (volDownRect_.contains(event.x, event.y) || volUpRect_.contains(event.x, event.y)) {
-        const bool up = volUpRect_.contains(event.x, event.y);
-        const uint8_t cur = services_.audio->volumePercent();
-        services_.audio->setVolumePercent(up ? (cur >= 90 ? 100 : cur + 10)
-                                             : (cur <= 10 ? 0 : cur - 10));
-        volShownMs_ = kVolShowMs;
-        chromeDirty_ = true;
+        stepVolume(volUpRect_.contains(event.x, event.y));
         return true;
       }
       if (nextRect_.contains(event.x, event.y) || prevRect_.contains(event.x, event.y)) {
@@ -636,10 +771,13 @@ bool VideoApp::playerInput(const InputEvent& event) {
         return true;
       }
       if (scrubRect_.contains(event.x, event.y)) {
-        // Portrait y within the scrub rect maps to landscape x = fraction.
-        const int32_t frac = event.y - scrubRect_.y;
+        // Rotated draws the bar turned onto the vertical strip, so portrait y
+        // is the fraction; upright draws it normally, so portrait x is.
+        const bool upright = uprightMode();
+        const int32_t frac = upright ? event.x - scrubRect_.x : event.y - scrubRect_.y;
+        const int32_t span = upright ? scrubRect_.w : scrubRect_.h;
         const uint32_t target = static_cast<uint32_t>(
-            static_cast<int64_t>(player->durationMs()) * frac / scrubRect_.h);
+            static_cast<int64_t>(player->durationMs()) * frac / span);
         player->requestSeek(static_cast<int32_t>(target) -
                             static_cast<int32_t>(player->positionMs()));
         return true;
@@ -652,30 +790,30 @@ bool VideoApp::playerInput(const InputEvent& event) {
       player->setPaused(!player->paused());
       chromeDirty_ = true;
       return true;
-    // Rotated-90 gesture map (device turned CCW to watch): an in-hand
-    // horizontal swipe arrives as portrait Up/Down = seek; an in-hand
-    // vertical swipe arrives as portrait Left/Right = volume.
-    case InputAction::SwipeDown:
-      poke();
-      player->requestSeek(kSeekStepMs);
-      return true;
+    // One table, two orientations — see gestureFor(). The physical gesture the
+    // user makes is the same in both modes; only its panel-space name differs,
+    // because Rotated asks them to turn the device 90 degrees.
     case InputAction::SwipeUp:
-      poke();
-      player->requestSeek(-kSeekStepMs);
-      return true;
+    case InputAction::SwipeDown:
+    case InputAction::SwipeLeft:
     case InputAction::SwipeRight:
       poke();
-      services_.audio->setVolumePercent(
-          services_.audio->volumePercent() >= 90 ? 100 : services_.audio->volumePercent() + 10);
-      volShownMs_ = kVolShowMs;
-      chromeDirty_ = true;
-      return true;
-    case InputAction::SwipeLeft:
-      poke();
-      services_.audio->setVolumePercent(
-          services_.audio->volumePercent() <= 10 ? 0 : services_.audio->volumePercent() - 10);
-      volShownMs_ = kVolShowMs;
-      chromeDirty_ = true;
+      switch (gestureFor(event.action)) {
+        case Gesture::SeekForward:
+          player->requestSeek(kSeekStepMs);
+          break;
+        case Gesture::SeekBack:
+          player->requestSeek(-kSeekStepMs);
+          break;
+        case Gesture::VolumeUp:
+          stepVolume(true);
+          break;
+        case Gesture::VolumeDown:
+          stepVolume(false);
+          break;
+        case Gesture::None:
+          break;
+      }
       return true;
     case InputAction::Back:
       stopAndSavePosition();

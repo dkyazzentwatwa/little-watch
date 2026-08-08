@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 
+#include "../board_config.h"
 #include "../feature_flags.h"
 
 #if FEATURE_VIDEO
@@ -13,8 +14,13 @@
 // display, no tasks — VideoPlayer owns all of that. Instance methods are
 // called from the reader task; the static readHeader() is safe anywhere.
 struct LcvHeader {
-  uint16_t width = 0;   // rotated, as stored on disk: 252
-  uint16_t height = 0;  // rotated, as stored on disk: 448
+  // As stored on disk, in whatever orientation `orientation` names — Rotated
+  // is 252x448 for 16:9, Upright 368x206. Files packed before the orientation
+  // byte existed hold zero there, which reads as Rotated: correct for every
+  // one of them.
+  uint16_t width = 0;
+  uint16_t height = 0;
+  VideoOrientation orientation = VideoOrientation::Rotated;
   uint16_t fps = 0;
   uint16_t audioChannels = 0;
   uint32_t audioRateHz = 0;

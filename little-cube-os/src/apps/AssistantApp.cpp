@@ -36,6 +36,7 @@ constexpr int16_t kTalkH = 56;
 constexpr int16_t kMeterH = 8;
 constexpr int16_t kMeterInsetX = 16;
 constexpr int16_t kMeterBottomGap = 8;
+constexpr uint32_t kAnimationFrameMs = 70;
 
 constexpr int16_t kBubblePadX = 12;
 constexpr int16_t kBubblePadY = 8;
@@ -179,6 +180,13 @@ void ellipsizeToLines(Arduino_GFX& gfx, char* s, size_t cap, int16_t w, TextStyl
   }
   s[end] = '\0';
   strcat(s, "...");
+}
+
+// 0 -> 7 -> 0 triangle wave, used for motion without floats or an animation
+// buffer. It keeps the Assistant UI cheap enough to redraw from the loop.
+uint8_t triangleWave(uint8_t phase) {
+  phase &= 0x0F;
+  return phase < 8 ? phase : 15 - phase;
 }
 
 }  // namespace
@@ -333,6 +341,20 @@ void AssistantApp::update(uint32_t deltaMs) {
     dirty_ = true;
   }
   const bool listening = ai->state() == AssistantService::State::Listening;
+  const bool animated = listening || ai->state() == AssistantService::State::Transcribing ||
+                        ai->state() == AssistantService::State::Thinking ||
+                        ai->state() == AssistantService::State::Speaking;
+  if (animated) {
+    animationMs_ += deltaMs;
+    if (animationMs_ >= kAnimationFrameMs) {
+      animationMs_ %= kAnimationFrameMs;
+      animationFrame_++;
+      dirty_ = true;
+    }
+  } else {
+    animationMs_ = 0;
+    animationFrame_ = 0;
+  }
   if (listening) {
     // Elapsed-seconds readout on the button; 2 Hz is plenty.
     tickMs_ += deltaMs;
@@ -454,6 +476,35 @@ void AssistantApp::render() {
       gfx.fillRoundRect(mX, mY, barW, kMeterH, kMeterH / 2, theme::kText);
     } else if (barW > 0) {
       gfx.fillRect(mX, mY, barW, kMeterH, theme::kText);
+    }
+    // A breathing outline says "the mic is live" even during a quiet pause,
+    // when the honest signal meter is flat.
+    const int16_t inset = 4 + triangleWave(animationFrame_) / 3;
+    gfx.drawRoundRect(talkRect_.x + inset, talkRect_.y + inset,
+                      talkRect_.w - 2 * inset, talkRect_.h - 2 * inset,
+                      theme::kCardRadius - 2, theme::kText);
+  } else if (working) {
+    // Three unequal dots travel below the label. This distinguishes upload /
+    // transcription and model work from a frozen button without pretending we
+    // have a real percentage from the API.
+    const int16_t cy = talkRect_.y + kTalkH - 14;
+    const int16_t center = talkRect_.x + talkRect_.w / 2;
+    for (uint8_t i = 0; i < 3; i++) {
+      const uint8_t crest = triangleWave(animationFrame_ + i * 5);
+      const int16_t x = center + (static_cast<int16_t>(i) - 1) * 16;
+      const int16_t radius = 2 + crest / 4;
+      gfx.fillCircle(x, cy - crest / 5, radius,
+                     crest >= 5 ? theme::kAccent : theme::kTextDim);
+    }
+  } else if (s == AssistantService::State::Speaking) {
+    // Playback does not expose a safe output peak, so this is intentionally a
+    // deterministic voice waveform rather than a false level meter.
+    const int16_t baseline = talkRect_.y + kTalkH - 14;
+    const int16_t startX = talkRect_.x + 64;
+    for (uint8_t i = 0; i < 23; i++) {
+      const uint8_t crest = triangleWave(animationFrame_ * 3 + i * 3);
+      const int16_t amp = 2 + crest / 2;
+      gfx.drawFastVLine(startX + i * 9, baseline - amp, 2 * amp + 1, theme::kBg);
     }
   }
 

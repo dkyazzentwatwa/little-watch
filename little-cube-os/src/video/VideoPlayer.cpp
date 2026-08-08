@@ -12,6 +12,7 @@
 #include "../board_config.h"
 #include "../hardware/DisplayAdapter.h"
 #include "../hardware/audio/AudioAdapter.h"
+#include "../services/SettingsService.h"
 #include "../storage/SdStorage.h"
 
 namespace {
@@ -42,6 +43,109 @@ int jpegDrawBlock(JPEGDRAW* d) {
     return 0;
   }
   jpegTarget->draw16bitRGBBitmap(d->x, d->y, d->pPixels, d->iWidth, d->iHeight);
+  return 1;
+}
+
+// Parameters for the rotating blit, set by decodeFrame() before each decode.
+// Same file-scope-anchor reasoning as jpegTarget above: JPEGDEC's callback is
+// a plain C function pointer with no user slot we already use.
+struct RotateBlit {
+  uint16_t* fb = nullptr;  // canvas framebuffer, DISPLAY_WIDTH stride
+  int16_t dstX = 0;        // picture origin on the canvas
+  int16_t dstY = 0;
+  int16_t outW = 0;  // scaled picture size
+  int16_t outH = 0;
+  int16_t srcW = 0;  // stored frame size, as it sits in the file
+  int16_t srcH = 0;
+  bool clockwise = false;      // turn direction needed to reach the active mode
+  const int16_t* mapDx = nullptr;  // dst x -> source coordinate on the srcH axis
+  const int16_t* mapDy = nullptr;  // dst y -> source coordinate on the srcW axis
+};
+RotateBlit rotateBlit;
+
+// Turn each decoded block 90 deg and nearest-neighbour scale it into the
+// canvas. Derivation, writing S for the stored frame and D for what we draw:
+//
+//   ffmpeg transpose=1 (90 deg CW) is  R(x, y) = N(y, Hn-1-x).
+//
+// Undoing it (a Rotated file shown Upright) inverts that; applying it (an
+// Upright file shown Rotated) uses it as-is. Both collapse to "one axis is a
+// scale, the other is a mirrored scale", which is the `clockwise` flip below.
+//
+// Iteration is DESTINATION-major so canvas writes run along contiguous rows —
+// the framebuffer is in PSRAM, where a strided write pattern is what actually
+// costs. The strided side is the read, and it lands in d->pPixels: a block of
+// up to 128x16 in internal RAM, which is cache-resident either way.
+//
+// The source coordinates come from per-playback lookup tables, never from
+// arithmetic here. A divide in this loop runs ~76k times per frame.
+int jpegDrawBlockRotate(JPEGDRAW* d) {
+  const RotateBlit& r = rotateBlit;
+  if (r.fb == nullptr || r.mapDx == nullptr || r.mapDy == nullptr || r.outW <= 0 ||
+      r.outH <= 0) {
+    return 0;
+  }
+  // iWidth is the BUFFER PITCH; iWidthUsed is how much of it is real picture.
+  // They differ on the right-hand strip of every frame whose width is not a
+  // multiple of the pitch (252 is not: the second strip carries 124 real
+  // columns in a 128-wide buffer). Bounding by iWidth would pull four columns
+  // of MCU padding into the picture — harmless-looking in the axis-aligned
+  // blit, but a stripe straight across a turned one. iHeight needs no
+  // equivalent: jpeg.inl trims it in place for the last row.
+  const int32_t bx0 = d->x;
+  const int32_t bx1 = d->x + d->iWidthUsed;
+  const int32_t by0 = d->y;
+  const int32_t by1 = d->y + d->iHeight;
+
+  // Bound the destination rect this block can touch. Deliberately loose by a
+  // pixel each way: the per-pixel guards below are what enforce correctness,
+  // so this only has to avoid scanning the whole picture per block.
+  int32_t dx0;
+  int32_t dx1;
+  int32_t dy0;
+  int32_t dy1;
+  if (r.clockwise) {
+    dy0 = bx0 * r.outH / r.srcW - 1;
+    dy1 = bx1 * r.outH / r.srcW + 1;
+    dx0 = (r.srcH - by1) * r.outW / r.srcH - 1;
+    dx1 = (r.srcH - by0) * r.outW / r.srcH + 1;
+  } else {
+    dy0 = (r.srcW - bx1) * r.outH / r.srcW - 1;
+    dy1 = (r.srcW - bx0) * r.outH / r.srcW + 1;
+    dx0 = by0 * r.outW / r.srcH - 1;
+    dx1 = by1 * r.outW / r.srcH + 1;
+  }
+  if (dx0 < 0) {
+    dx0 = 0;
+  }
+  if (dy0 < 0) {
+    dy0 = 0;
+  }
+  if (dx1 > r.outW) {
+    dx1 = r.outW;
+  }
+  if (dy1 > r.outH) {
+    dy1 = r.outH;
+  }
+
+  const int32_t pitch = d->iWidth;  // buffer stride, NOT the valid width
+  for (int32_t dy = dy0; dy < dy1; dy++) {
+    const int32_t scaled = r.mapDy[dy];
+    const int32_t sx = r.clockwise ? scaled : r.srcW - 1 - scaled;
+    if (sx < bx0 || sx >= bx1) {
+      continue;  // per row, not per pixel
+    }
+    uint16_t* dstRow = r.fb + static_cast<int32_t>(r.dstY + dy) * DISPLAY_WIDTH + r.dstX;
+    const uint16_t* srcCol = d->pPixels + (sx - bx0);
+    for (int32_t dx = dx0; dx < dx1; dx++) {
+      const int32_t scaledX = r.mapDx[dx];
+      const int32_t sy = r.clockwise ? r.srcH - 1 - scaledX : scaledX;
+      if (sy < by0 || sy >= by1) {
+        continue;
+      }
+      dstRow[dx] = srcCol[(sy - by0) * pitch];
+    }
+  }
   return 1;
 }
 
@@ -105,11 +209,46 @@ void videoReaderTask(void* arg) {
   vTaskDelete(nullptr);
 }
 
-void VideoPlayer::begin(AudioAdapter* audio, DisplayAdapter* display, SdStorage* storage) {
+void VideoPlayer::begin(AudioAdapter* audio, DisplayAdapter* display, SdStorage* storage,
+                        SettingsService* settings) {
   audio_ = audio;
   display_ = display;
   storage_ = storage;
+  settings_ = settings;
   done_ = xSemaphoreCreateBinary();
+}
+
+// Resolve the picture rect once per playback. Two independent facts feed in:
+// how the file was packed (header_.orientation) and how the user wants to
+// watch (the setting). When they agree the frame is already the right shape
+// and lands 1:1; when they disagree it is turned 90 deg and scaled down to
+// fit during decode, which is what keeps files packed before this existed
+// playable in either mode.
+void VideoPlayer::resolveLayout() {
+  activeOrientation_ =
+      settings_ != nullptr ? settings_->videoOrientation() : VideoOrientation::Rotated;
+  layout_.rotate = header_.orientation != activeOrientation_;
+
+  const int16_t boxW = pictureBoxW(activeOrientation_);
+  const int16_t boxH = pictureBoxH(activeOrientation_);
+  // Turning the frame swaps its axes, so that is the size we have to fit.
+  const int32_t natW = layout_.rotate ? header_.height : header_.width;
+  const int32_t natH = layout_.rotate ? header_.width : header_.height;
+
+  // Fit, never fill and never upscale: the whole frame stays visible and a
+  // frame already sized for this box (the 1:1 case) is left exactly alone.
+  if (natW <= boxW && natH <= boxH) {
+    layout_.w = static_cast<int16_t>(natW);
+    layout_.h = static_cast<int16_t>(natH);
+  } else if (natW * boxH >= natH * boxW) {
+    layout_.w = boxW;  // width-bound
+    layout_.h = static_cast<int16_t>(natH * boxW / natW);
+  } else {
+    layout_.h = boxH;  // height-bound
+    layout_.w = static_cast<int16_t>(natW * boxH / natH);
+  }
+  layout_.x = static_cast<int16_t>((boxW - layout_.w) / 2);
+  layout_.y = static_cast<int16_t>((boxH - layout_.h) / 2);
 }
 
 bool VideoPlayer::allocBuffers() {
@@ -137,6 +276,29 @@ bool VideoPlayer::allocBuffers() {
     return false;
   }
   jpegDecoder = new (jpegMem) JPEGDEC();
+  // Nearest-neighbour source coordinates, one entry per destination pixel on
+  // each axis. Without these the rotating blit does an integer DIVIDE per
+  // destination pixel — ~76k of them per frame for a 16:9 file, which on this
+  // core is milliseconds the 66 ms frame budget cannot spare. The mapping
+  // depends only on the layout, not on the block, so it is computed once per
+  // playback. ~1.6 KB of internal RAM, and only when a rotation is actually
+  // happening.
+  if (layout_.rotate && layout_.w > 0 && layout_.h > 0) {
+    rotMapDx_ = static_cast<int16_t*>(heap_caps_malloc(
+        static_cast<size_t>(layout_.w) * sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    rotMapDy_ = static_cast<int16_t*>(heap_caps_malloc(
+        static_cast<size_t>(layout_.h) * sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    if (rotMapDx_ == nullptr || rotMapDy_ == nullptr) {
+      freeBuffers();
+      return false;
+    }
+    for (int16_t dx = 0; dx < layout_.w; dx++) {
+      rotMapDx_[dx] = static_cast<int16_t>(static_cast<int32_t>(dx) * header_.height / layout_.w);
+    }
+    for (int16_t dy = 0; dy < layout_.h; dy++) {
+      rotMapDy_[dy] = static_cast<int16_t>(static_cast<int32_t>(dy) * header_.width / layout_.h);
+    }
+  }
   return true;
 }
 
@@ -148,6 +310,10 @@ void VideoPlayer::freeBuffers() {
   heap_caps_free(audioBuf_);
   audioBuf_ = nullptr;
   audioBufBytes_ = 0;
+  heap_caps_free(rotMapDx_);
+  rotMapDx_ = nullptr;
+  heap_caps_free(rotMapDy_);
+  rotMapDy_ = nullptr;
   if (jpegDecoder != nullptr) {
     jpegDecoder->~JPEGDEC();
     heap_caps_free(jpegDecoder);
@@ -198,6 +364,7 @@ bool VideoPlayer::play(const char* path, uint32_t startMs, char* reasonOut, size
     return false;
   }
   header_ = reader_.header();
+  resolveLayout();
   if (!allocBuffers()) {
     reader_.close();
     reason(reasonOut, reasonLen, "out of memory");
@@ -358,13 +525,48 @@ bool VideoPlayer::decodeFrame(uint8_t slot) {
     return false;
   }
   jpegTarget = gfx;
-  // Frames are stored pre-rotated by the packer. Center in the picture area
-  // (left of the chrome strip), both axes: the packer fits by aspect now, so
-  // height is not always the full panel.
-  const int16_t offsetX = static_cast<int16_t>((kPictureAreaW - header_.width) / 2);
-  const int16_t offsetY = static_cast<int16_t>((DISPLAY_HEIGHT - header_.height) / 2);
+  // The rotating path writes into the framebuffer directly, so it needs one
+  // to exist; in the degraded direct-draw mode (canvas allocation failed) we
+  // fall back to the plain blit and the picture comes out sideways. A sideways
+  // picture beats a black screen, and it is already the "no canvas" story for
+  // the chrome, which cannot transpose either.
+  const bool rotating =
+      layout_.rotate && display_->hasCanvas() && rotMapDx_ != nullptr && rotMapDy_ != nullptr;
+  int16_t offsetX = layout_.x;
+  int16_t offsetY = layout_.y;
+  if (rotating) {
+    // Fully configured BEFORE openRAM, so the callback can never observe a
+    // half-built descriptor.
+    rotateBlit.fb = static_cast<Arduino_Canvas*>(gfx)->getFramebuffer();
+    rotateBlit.dstX = layout_.x;
+    rotateBlit.dstY = layout_.y;
+    rotateBlit.outW = layout_.w;
+    rotateBlit.outH = layout_.h;
+    rotateBlit.srcW = static_cast<int16_t>(header_.width);
+    rotateBlit.srcH = static_cast<int16_t>(header_.height);
+    rotateBlit.mapDx = rotMapDx_;
+    rotateBlit.mapDy = rotMapDy_;
+    // An Upright file shown Rotated needs the packer's 90 deg CW applied; a
+    // Rotated file shown Upright needs it undone.
+    rotateBlit.clockwise = header_.orientation == VideoOrientation::Upright;
+    // The callback computes its own destination, so the decoder must hand it
+    // unshifted source coordinates.
+    offsetX = 0;
+    offsetY = 0;
+  } else if (layout_.rotate) {
+    // No canvas: center the stored frame as-is rather than at a rect sized
+    // for the turned picture, which would push it off the panel.
+    offsetX = static_cast<int16_t>((pictureBoxW(activeOrientation_) - header_.width) / 2);
+    offsetY = static_cast<int16_t>((pictureBoxH(activeOrientation_) - header_.height) / 2);
+    if (offsetX < 0) {
+      offsetX = 0;
+    }
+    if (offsetY < 0) {
+      offsetY = 0;
+    }
+  }
   if (!jpegDecoder->openRAM(slots_[slot], static_cast<int>(slotBytes_[slot]),
-                            jpegDrawBlock)) {
+                            rotating ? jpegDrawBlockRotate : jpegDrawBlock)) {
     return false;
   }
   // If colors come out wrong on device, switch to RGB565_BIG_ENDIAN — the

@@ -15,9 +15,18 @@ class Arduino_Canvas;
 
 // Video (design: docs/superpowers/specs/2026-07-30-video-playback-design.md).
 // Two screens: a portrait library over /littlecube/video (folders one level
-// deep, resume offers, battery warning), and a rotated-landscape player —
-// the user turns the device sideways; frames are pre-rotated in the file,
-// chrome is drawn landscape into a small canvas and transposed on.
+// deep, resume offers, battery warning), and a player that comes in two
+// orientations, chosen by the `videoOrient` setting:
+//
+//   Rotated — the user turns the device sideways. Frames are pre-rotated in
+//     the file, chrome is drawn landscape into a small canvas and transposed
+//     onto a vertical strip, and the gesture map is inverted to match.
+//   Upright — the cube worn on a wrist, which cannot be turned. The picture
+//     is fit to width and letterboxed, chrome is a horizontal strip along the
+//     bottom drawn straight into the frame canvas, and gestures are natural.
+//
+// Everything orientation-dependent branches on uprightMode(); the two paths
+// share the library, the confirm modal and all playback control.
 class VideoApp : public App {
  public:
   explicit VideoApp(Services& services) : services_(services) {}
@@ -51,13 +60,30 @@ class VideoApp : public App {
   void adoptExternalPlayback();
   void renderLibrary(Arduino_GFX& gfx);
   void renderConfirm(Arduino_GFX& gfx);
+  // What a swipe means, once the orientation has been taken out of it. The
+  // two maps are 90 degrees apart, which is exactly the device rotation the
+  // Rotated mode asks the user to perform.
+  enum class Gesture : uint8_t { None, SeekForward, SeekBack, VolumeUp, VolumeDown };
+
   void renderPlayer(Arduino_GFX& gfx);
   void renderChrome(Arduino_GFX& gfx);
+  void renderChromeUpright(Arduino_GFX& gfx);
   bool playerInput(const InputEvent& event);
   void formatMs(uint32_t ms, char* out, size_t len) const;
+  // Readout shared by both chrome layouts: "vol NN%" while a volume change is
+  // still showing, otherwise "position / duration - battery%".
+  void formatReadout(char* out, size_t len) const;
+  void stepVolume(bool up);
+  void syncChromeBuffer();
+  bool uprightMode() const;
+  Gesture gestureFor(InputAction action) const;
 
   static constexpr int16_t kChromeW = 448;  // landscape chrome canvas
   static constexpr int16_t kChromeH = VideoPlayer::kChromeStripPx;  // = the panel strip width
+  // Upright chrome needs two rows: six 48px buttons already span the panel's
+  // full safe width, leaving nothing beside them for a scrub bar the way the
+  // 448px landscape strip has.
+  static constexpr int16_t kUprightChromeH = kVideoUprightChromeH;  // 92
   static constexpr uint32_t kChromeHideMs = 4000;
   static constexpr uint32_t kSaveEveryMs = 5000;
   static constexpr int32_t kSeekStepMs = 15000;
@@ -92,8 +118,10 @@ class VideoApp : public App {
   widgets::Rect confirmRect_;
   widgets::Rect cancelRect_;
 
-  // Player chrome. The canvas is heavy (~52 KB) — allocated on open,
-  // deleted on close per the App lifecycle contract.
+  // Player chrome. The canvas is heavy (~52 KB) and exists only to draw
+  // landscape text that then gets transposed, so it is allocated lazily by
+  // the Rotated path and never at all in Upright mode, which draws straight
+  // into the frame canvas. Deleted on close per the App lifecycle contract.
   Arduino_Canvas* chrome_ = nullptr;
   bool chromeVisible_ = true;
   bool chromeDirty_ = true;
@@ -111,7 +139,9 @@ class VideoApp : public App {
   // by update()'s playing->idle edge (Task 10) to start it without waiting
   // for a natural end. Declared now so Task 10 only touches the .cpp.
   bool nextQueued_ = false;
-  // Chrome hit rects in PORTRAIT coordinates (the strip is vertical).
+  // Chrome hit rects, always in PORTRAIT coordinates. Rotated has to convert
+  // (its strip is vertical, so it stores them by hand); Upright gets them
+  // that way straight out of widgets::button().
   widgets::Rect backRect_;
   widgets::Rect prevRect_;
   widgets::Rect playRect_;

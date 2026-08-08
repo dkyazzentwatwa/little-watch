@@ -10,8 +10,9 @@
 #include "../CmdArgs.h"
 
 void printAssistantHelp() {
-  Serial.println("assistant status              state, key set/missing, memory depth");
+  Serial.println("assistant status              state, backend, key set/missing, memory depth");
   Serial.println("assistant key                 store the OpenAI API key (masked prompt)");
+  Serial.println("assistant mode [api|realtime] show or select the voice backend");
   Serial.println("assistant ask <question>      text question -> spoken answer");
   Serial.println("assistant voice               start / send a spoken question");
   Serial.println("assistant transcribe <path>   STT only on a WAV (pipeline test)");
@@ -26,12 +27,35 @@ bool handleAssistantCommand(Services& services, PasswordPrompt& keyPrompt,
   }
 
   if (strcmp(verb, "status") == 0) {
-    Serial.printf("state: %s, key: %s, online: %s, history: %u\n", ai->stateName(),
+    const char* backend = services.settings->assistantBackend() == AssistantBackend::Realtime
+                              ? "realtime"
+                              : "api";
+    Serial.printf("state: %s, backend: %s, key: %s, online: %s, history: %u\n", ai->stateName(),
+                  backend,
                   services.settings->hasOpenaiKey() ? "set" : "missing",
                   services.state != nullptr && services.state->internet ? "yes" : "no",
                   (unsigned)ai->historyDepth());
     if (ai->lastError()[0] != '\0') {
       Serial.printf("last error: %s\n", ai->lastError());
+    }
+    return true;
+  }
+
+  if (strcmp(verb, "mode") == 0) {
+    char* cursor = args;
+    const char* requested = cmdargs::nextToken(cursor);
+    if (requested == nullptr) {
+      Serial.println(services.settings->assistantBackend() == AssistantBackend::Realtime
+                         ? "assistant mode: realtime"
+                         : "assistant mode: api");
+    } else if (strcmp(requested, "api") == 0) {
+      services.settings->setAssistantBackend(AssistantBackend::Api);
+      Serial.println("assistant mode set: api (STT + Responses + TTS)");
+    } else if (strcmp(requested, "realtime") == 0) {
+      services.settings->setAssistantBackend(AssistantBackend::Realtime);
+      Serial.println("assistant mode set: realtime (speech-to-speech)");
+    } else {
+      Serial.println("usage: assistant mode <api|realtime>");
     }
     return true;
   }

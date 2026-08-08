@@ -44,12 +44,28 @@ bool LcvReader::parse(const uint8_t* raw, LcvHeader& out, uint32_t fileSize, cha
   out.indexOffset = rd32(raw + 28);
   out.dataOffset = rd32(raw + 32);
   out.maxFrameBytes = rd32(raw + 36);
-  if (out.width == 0 || out.width > kVideoPictureAreaW) {
+  // Byte 40 of the reserved block (see the note at the end of this function):
+  // 0 = Rotated, which is what every file written before this field existed
+  // holds. Anything else is a format this reader does not know how to lay out.
+  const uint8_t orientationByte = raw[40];
+  if (orientationByte > static_cast<uint8_t>(VideoOrientation::Upright)) {
+    reason(reasonOut, reasonLen, "unknown frame orientation");
+    return false;
+  }
+  out.orientation = static_cast<VideoOrientation>(orientationByte);
+  // Each orientation is bounded by the picture box it was packed for: rotated
+  // frames sit left of the vertical chrome strip, upright frames above the
+  // horizontal one.
+  const int16_t maxW =
+      out.orientation == VideoOrientation::Upright ? DISPLAY_WIDTH : kVideoPictureAreaW;
+  const int16_t maxH =
+      out.orientation == VideoOrientation::Upright ? kVideoUprightPictureH : DISPLAY_HEIGHT;
+  if (out.width == 0 || out.width > maxW) {
     reason(reasonOut, reasonLen, "frame too wide for the picture area");
     return false;
   }
-  if (out.height == 0 || out.height > DISPLAY_HEIGHT) {
-    reason(reasonOut, reasonLen, "frame too tall for the panel");
+  if (out.height == 0 || out.height > maxH) {
+    reason(reasonOut, reasonLen, "frame too tall for the picture area");
     return false;
   }
   if (out.fps == 0 || out.fps > 30 || out.audioChannels != 1 || out.audioRateHz < 8000 ||
@@ -67,9 +83,13 @@ bool LcvReader::parse(const uint8_t* raw, LcvHeader& out, uint32_t fileSize, cha
     reason(reasonOut, reasonLen, "frames too large for playback");
     return false;
   }
-  // Reserved bytes (40..63) are deliberately NOT checked against zero: minor
-  // additive format extensions may use them without a version bump, and a v1
-  // reader stays forward-compatible by ignoring them.
+  // Byte 40 is the orientation, claimed from the reserved block above under
+  // exactly the rule this comment used to describe in full: minor additive
+  // extensions may use reserved space without a version bump, because the
+  // pre-existing meaning of those bytes was zero and zero is the value that
+  // means "what older packers wrote". Bytes 41..63 stay reserved and are
+  // still deliberately NOT checked against zero, so the next such extension
+  // has the same room.
   return true;
 }
 

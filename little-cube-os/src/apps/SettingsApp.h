@@ -32,6 +32,8 @@ class SettingsApp : public App {
     Display,
     Themes,
     Sound,
+    Assistant,
+    Video,
     About,
   };
 
@@ -45,7 +47,11 @@ class SettingsApp : public App {
   void renderDisplay(Arduino_GFX& gfx);
   void renderThemes(Arduino_GFX& gfx);
   void renderSound(Arduino_GFX& gfx);
+  void renderAssistant(Arduino_GFX& gfx);
+  bool handleAssistant(const InputEvent& event);
   bool handleThemes(const InputEvent& event);
+  void renderVideo(Arduino_GFX& gfx);
+  bool handleVideo(const InputEvent& event);
   void renderAbout(Arduino_GFX& gfx);
 
   Services& services_;
@@ -55,7 +61,10 @@ class SettingsApp : public App {
   uint32_t lastStateVersion_ = 0xFFFFFFFF;
   uint32_t pollAccumMs_ = 0;
 
-  widgets::Rect rootRects_[6];
+  widgets::Rect rootRects_[8];
+  widgets::Rect assistantRects_[2];
+  // Video screen: the two orientation choices.
+  widgets::Rect videoRects_[2];
   // Sound screen: volume -/+, test tone, mic gain -/+, normalize, gate.
   widgets::Rect soundVolDownRect_;
   widgets::Rect soundVolUpRect_;

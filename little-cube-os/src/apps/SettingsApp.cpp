@@ -103,6 +103,8 @@ void SettingsApp::render() {
     case Screen::Display: renderDisplay(gfx); break;
     case Screen::Themes: renderThemes(gfx); break;
     case Screen::Sound: renderSound(gfx); break;
+    case Screen::Assistant: renderAssistant(gfx); break;
+    case Screen::Video: renderVideo(gfx); break;
     case Screen::About: renderAbout(gfx); break;
   }
   display->markDirty();
@@ -174,13 +176,127 @@ void SettingsApp::renderRoot(Arduino_GFX& gfx) {
   gfx.setCursor(theme::kPadding, kTop);
   gfx.print("Settings");
 
-  const char* labels[6] = {"Wi-Fi", "Display", "Themes", "Sound", "About", "Restart"};
+  // Eight settings fit above the rounded lower bezel with 42 px targets. This
+  // keeps Assistant discoverable without hiding it behind a gesture or making
+  // the root screen scroll.
+  const char* labels[8] = {"Wi-Fi", "Display", "Themes", "Sound", "Assistant", "Video",
+                           "About", "Restart"};
   const int16_t w = DISPLAY_WIDTH - 2 * theme::kPadding;
-  int16_t y = kTop + 40;
-  for (uint8_t i = 0; i < 6; i++) {
-    rootRects_[i] = widgets::button(gfx, theme::kPadding, y, w, 48, labels[i], false);
-    y += 56;
+  int16_t y = kTop + 30;
+  for (uint8_t i = 0; i < 8; i++) {
+    rootRects_[i] = widgets::button(gfx, theme::kPadding, y, w, 42, labels[i], false);
+    y += 44;
   }
+}
+
+void SettingsApp::renderAssistant(Arduino_GFX& gfx) {
+  SettingsService* settings = services_.settings;
+  if (settings == nullptr) {
+    return;
+  }
+  gfx.setTextSize(theme::kTextSizeBody);
+  gfx.setTextColor(theme::kText);
+  gfx.setCursor(theme::kPadding, kTop);
+  gfx.print("Assistant");
+
+  const int16_t w = DISPLAY_WIDTH - 2 * theme::kPadding;
+  const bool realtime = settings->assistantBackend() == AssistantBackend::Realtime;
+  gfx.setTextSize(theme::kTextSizeSmall);
+  gfx.setTextColor(theme::kTextDim);
+  gfx.setCursor(theme::kPadding, kTop + 44);
+  gfx.print("Voice backend");
+  const int16_t half = (w - 8) / 2;
+  assistantRects_[0] =
+      widgets::button(gfx, theme::kPadding, kTop + 66, half, 54, "API", !realtime);
+  assistantRects_[1] = widgets::button(gfx, theme::kPadding + half + 8, kTop + 66, half, 54,
+                                        "Realtime", realtime);
+
+  gfx.setTextColor(theme::kTextDim);
+  if (realtime) {
+    widgets::textBlock(gfx, theme::kPadding, kTop + 144, w,
+                       "Speech-to-speech over a Realtime session. Push to talk remains on this cube.",
+                       theme::kTextSizeSmall, theme::kTextDim);
+  } else {
+    widgets::textBlock(gfx, theme::kPadding, kTop + 144, w,
+                       "Current pipeline: transcribe, answer, then synthesize speech.",
+                       theme::kTextSizeSmall, theme::kTextDim);
+  }
+  gfx.setTextColor(theme::kPanelAlt);
+  gfx.setCursor(theme::kPadding, kTop + 218);
+  gfx.print("Changes are saved immediately.");
+}
+
+bool SettingsApp::handleAssistant(const InputEvent& event) {
+  if (event.action == InputAction::SwipeRight || event.action == InputAction::Back ||
+      event.action == InputAction::Cancel) {
+    go(Screen::Root);
+    return true;
+  }
+  if (event.action == InputAction::Tap && services_.settings != nullptr) {
+    if (assistantRects_[0].contains(event.x, event.y)) {
+      services_.settings->setAssistantBackend(AssistantBackend::Api);
+      dirty_ = true;
+    } else if (assistantRects_[1].contains(event.x, event.y)) {
+      services_.settings->setAssistantBackend(AssistantBackend::Realtime);
+      dirty_ = true;
+    }
+    return true;
+  }
+  return false;
+}
+
+// Orientation is the whole screen for now. It is its own row rather than a
+// line on Display because Display is out of vertical room, and because this
+// is about how video is laid out, not about the panel.
+void SettingsApp::renderVideo(Arduino_GFX& gfx) {
+  gfx.setTextSize(theme::kTextSizeBody);
+  gfx.setTextColor(theme::kText);
+  gfx.setCursor(theme::kPadding, kTop);
+  gfx.print("Video");
+
+  const int16_t w = DISPLAY_WIDTH - 2 * theme::kPadding;
+  int16_t y = kTop + 48;
+  gfx.setTextSize(theme::kTextSizeSmall);
+  gfx.setTextColor(theme::kTextDim);
+  gfx.setCursor(theme::kPadding, y);
+  gfx.print("Orientation");
+
+  const bool upright = services_.settings == nullptr ||
+                       services_.settings->videoOrientation() == VideoOrientation::Upright;
+  const int16_t half = (w - 8) / 2;
+  videoRects_[0] =
+      widgets::button(gfx, theme::kPadding, y + 26, half, 50, "Upright", upright);
+  videoRects_[1] = widgets::button(gfx, theme::kPadding + half + 8, y + 26, half, 50, "Rotated",
+                                   !upright);
+
+  y += 96;
+  gfx.setTextColor(theme::kTextDim);
+  gfx.setCursor(theme::kPadding, y);
+  gfx.print(upright ? "Same way up as Home." : "Turn the cube sideways.");
+  gfx.setCursor(theme::kPadding, y + 22);
+  gfx.print(upright ? "For wearing on a wrist." : "Wider picture, in the hand.");
+  gfx.setTextColor(theme::kPanelAlt);
+  gfx.setCursor(theme::kPadding, y + 52);
+  gfx.print("Takes effect on the next video.");
+}
+
+bool SettingsApp::handleVideo(const InputEvent& event) {
+  if (event.action == InputAction::SwipeRight || event.action == InputAction::Back ||
+      event.action == InputAction::Cancel) {
+    go(Screen::Root);
+    return true;
+  }
+  if (event.action == InputAction::Tap && services_.settings != nullptr) {
+    if (videoRects_[0].contains(event.x, event.y)) {
+      services_.settings->setVideoOrientation(VideoOrientation::Upright);
+      dirty_ = true;
+    } else if (videoRects_[1].contains(event.x, event.y)) {
+      services_.settings->setVideoOrientation(VideoOrientation::Rotated);
+      dirty_ = true;
+    }
+    return true;
+  }
+  return false;
 }
 
 // The whole audio path in one place: speaker on top, microphone below. The
@@ -541,8 +657,12 @@ bool SettingsApp::handleInput(const InputEvent& event) {
         } else if (rootRects_[3].contains(event.x, event.y)) {
           go(Screen::Sound);
         } else if (rootRects_[4].contains(event.x, event.y)) {
-          go(Screen::About);
+          go(Screen::Assistant);
         } else if (rootRects_[5].contains(event.x, event.y)) {
+          go(Screen::Video);
+        } else if (rootRects_[6].contains(event.x, event.y)) {
+          go(Screen::About);
+        } else if (rootRects_[7].contains(event.x, event.y)) {
           confirmRestart_ = true;
           dirty_ = true;
         }
@@ -600,6 +720,9 @@ bool SettingsApp::handleInput(const InputEvent& event) {
       dirty_ = true;
       return true;
     }
+
+    case Screen::Assistant:
+      return handleAssistant(event);
 
     case Screen::Wifi:
       if (back || event.action == InputAction::SwipeRight) {
@@ -717,6 +840,9 @@ bool SettingsApp::handleInput(const InputEvent& event) {
 
     case Screen::Themes:
       return handleThemes(event);
+
+    case Screen::Video:
+      return handleVideo(event);
 
     case Screen::About:
       if (back || event.action == InputAction::SwipeRight || event.action == InputAction::Tap) {

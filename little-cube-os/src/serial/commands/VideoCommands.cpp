@@ -179,12 +179,21 @@ bool handleVideoCommand(Services& services, const char* verb, char* args) {
     char dur[16];
     fmtMs(player->positionMs(), pos, sizeof(pos));
     fmtMs(player->durationMs(), dur, sizeof(dur));
-    Serial.printf("video: %s %s/%s %ux%u@%ufps shown=%lu dropped=%lu ring=%u%s\n",
-                  player->path(), pos, dur, player->header().width,
-                  player->header().height, player->header().fps,
-                  static_cast<unsigned long>(player->framesShown()),
-                  static_cast<unsigned long>(player->framesDropped()),
-                  player->ringDepth(), player->paused() ? " [paused]" : "");
+    // Orientation reads as "how the file is stored -> how it is being shown".
+    // ROTATING marks the compatibility path (the two disagree, so every frame
+    // is turned and scaled during decode) — the first thing to check if
+    // playback is dropping frames.
+    const VideoPlayer::PictureLayout& layout = player->pictureLayout();
+    Serial.printf(
+        "video: %s %s/%s %ux%u@%ufps %s->%s %ux%u@(%d,%d)%s shown=%lu dropped=%lu ring=%u%s\n",
+        player->path(), pos, dur, player->header().width, player->header().height,
+        player->header().fps,
+        player->header().orientation == VideoOrientation::Upright ? "upright" : "rotated",
+        player->activeOrientation() == VideoOrientation::Upright ? "upright" : "rotated",
+        layout.w, layout.h, layout.x, layout.y, layout.rotate ? " ROTATING" : "",
+        static_cast<unsigned long>(player->framesShown()),
+        static_cast<unsigned long>(player->framesDropped()), player->ringDepth(),
+        player->paused() ? " [paused]" : "");
     return true;
   }
   if (strcmp(verb, "queue") == 0) {

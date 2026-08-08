@@ -110,13 +110,15 @@ void printValue(SettingsService& s, const char* key) {
     // gets set, the name is what the footer shows on the Clock screen.
     Serial.printf("%u (%s)\n", (unsigned)s.clockFace(),
                   clockfaces::name(static_cast<clockfaces::FaceId>(s.clockFace())));
+  } else if (strcmp(key, "videoorient") == 0) {
+    Serial.println(s.videoOrientation() == VideoOrientation::Upright ? "upright" : "rotated");
   }
 }
 
 const char* const kKeys[] = {
     "brightness", "timeout",      "alwayson",     "devicename",       "timezone",
     "volume",     "bedtime",      "bedtimestart", "bedtimeend",       "bedtimebrightness",
-    "clockface",
+    "clockface",  "videoorient",
 };
 constexpr size_t kKeyCount = sizeof(kKeys) / sizeof(kKeys[0]);
 
@@ -169,6 +171,8 @@ void printSettingsHelp() {
                 (unsigned)MIN_BRIGHTNESS, (unsigned)MAX_BRIGHTNESS);
   Serial.printf("  clockface          0-%u — Clock app face; tapping the screen cycles it too\n",
                 (unsigned)(clockfaces::kFaceCount - 1));
+  Serial.println("  videoorient        upright|rotated — upright is for wearing it on a wrist;");
+  Serial.println("                     rotated is the wider picture you turn the cube for");
   Serial.println("  weather.city       town name, e.g. London — geocoded over Wi-Fi");
   Serial.println("the stored value is printed back after every set. Numeric ranges are");
   Serial.println("clamped; enumerated keys (theme, clockface) reject out-of-range instead.");
@@ -273,6 +277,19 @@ bool handleSettingsCommand(Services& services, const char* verb, char* args) {
         s.setAlwaysOn(on);
       } else {
         s.setBedtimeEnabled(on);
+      }
+      printValue(s, key);
+      return true;
+    }
+
+    if (strcmp(key, "videoorient") == 0) {
+      if (strcmp(value, "upright") == 0) {
+        s.setVideoOrientation(VideoOrientation::Upright);
+      } else if (strcmp(value, "rotated") == 0) {
+        s.setVideoOrientation(VideoOrientation::Rotated);
+      } else {
+        Serial.println("usage: settings set videoorient <upright|rotated>");
+        return true;
       }
       printValue(s, key);
       return true;

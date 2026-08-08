@@ -51,6 +51,7 @@ class AssistantService {
   enum class Mode : uint8_t { Voice, Text, TranscribeOnly };
 
   bool launchWorker(Mode mode);
+  void realtimeWorkerBody();
   void pushHistory(const char* user, const char* assistant);
 
   static constexpr uint32_t kMaxListenMs = 30000;

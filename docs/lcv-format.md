@@ -16,8 +16,8 @@ All integers little-endian.
 | 0   | 4    | magic | `LCV1` |
 | 4   | 2    | version | 1 |
 | 6   | 2    | headerBytes | 64 |
-| 8   | 2    | width | rotated frame width as stored on disk; <= 310 (the panel's picture area left of the chrome strip) |
-| 10  | 2    | height | rotated frame height as stored on disk; <= 448 |
+| 8   | 2    | width | frame width as stored on disk; bound depends on `orientation` (below) |
+| 10  | 2    | height | frame height as stored on disk; bound depends on `orientation` (below) |
 | 12  | 2    | fps | 1–30 (15) |
 | 14  | 2    | audioChannels | 1 |
 | 16  | 4    | audioRateHz | 22050; must be divisible by fps |
@@ -26,12 +26,29 @@ All integers little-endian.
 | 28  | 4    | indexOffset | must satisfy indexOffset > dataOffset and indexOffset + 4*frameCount <= file size |
 | 32  | 4    | dataOffset | >= 64 |
 | 36  | 4    | maxFrameBytes | largest video payload; <= 98304 (96 KB) |
-| 40  | 24   | reserved | zero |
+| 40  | 1    | orientation | 0 = rotated, 1 = upright |
+| 41  | 23   | reserved | zero |
 
-Frames are fit to the 448×310 landscape picture box by aspect ratio, never
-padded: a 16:9 source lands at 252×448 stored, a 4:3 source lands at roughly
-310×412. `scripts/lcv_mux.py` derives width/height from the first frame's
-JPEG SOF marker rather than trusting a caller-supplied value.
+## Orientation
+
+Byte 40 was claimed from the reserved block without a version bump, under the
+rule the block exists for: every packer written before it wrote zero there, and
+zero is defined as `rotated` — the behavior those files already had. Bytes
+41..63 stay reserved on the same terms.
+
+| orientation | packed for | max stored | 16:9 lands at | 4:3 lands at |
+|---|---|---|---|---|
+| 0 rotated | 448×310 landscape box, then `transpose=1` (90° CW) | 310 × 448 | 252×448 | 310×414 |
+| 1 upright | 368×312 box above the horizontal chrome band, no rotation | 368 × 312 | 368×208 | 368×276 |
+
+Frames are fit by aspect ratio, never padded and never cropped.
+`scripts/lcv_mux.py` derives width/height from the first frame's JPEG SOF
+marker rather than trusting a caller-supplied value, and rejects a file whose
+geometry exceeds the box its declared orientation was packed for.
+
+The device picks its layout from the `videoorient` setting, not from the file.
+When the two disagree it turns and scales each frame during decode, so a file
+packed either way plays in either mode; matching them just skips that work.
 
 ## Chunks
 
@@ -39,9 +56,9 @@ JPEG SOF marker rather than trusting a caller-supplied value.
 payload size, LE24. Payload follows, padded to a 4-byte boundary (padding
 bytes are not counted in the size).
 
-A **frame group** = one video chunk (one complete baseline JPEG, already
-rotated 90° CW so it lands on the portrait panel with no runtime rotation)
-followed by one audio chunk holding exactly audioRateHz/fps mono s16 samples
+A **frame group** = one video chunk (one complete baseline JPEG, stored in the
+orientation the header declares) followed by one audio chunk holding exactly
+audioRateHz/fps mono s16 samples
 (the final group may be shorter; the muxer zero-pads it).
 
 ## Index

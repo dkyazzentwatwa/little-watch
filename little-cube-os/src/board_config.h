@@ -109,6 +109,29 @@ constexpr uint16_t COLOR_BAD = 0xF800;
 constexpr int16_t kVideoChromeStripPx = 58;
 constexpr int16_t kVideoPictureAreaW = DISPLAY_WIDTH - kVideoChromeStripPx;  // 310
 
+// Upright playback (the cube worn on a wrist, where it cannot be turned) puts
+// the chrome in a horizontal band along the bottom instead. It needs three
+// rows, not the landscape strip's one: six buttons already span the panel's
+// full safe width at 368 px, where the 448 px landscape strip still had room
+// beside them for a scrub bar. 136 is the smallest band that holds a scrub
+// row, a 48 px button row, and widgets::footer()'s fixed geometry (rule at
+// DISPLAY_HEIGHT-44). Video is fit inside what remains and letterboxed —
+// never cropped. 16:9 and 4:3 are both width-bound here, so they are exactly
+// as large as they would be under a shorter band; only near-square and
+// portrait sources pay for the extra height.
+constexpr int16_t kVideoUprightChromeH = 136;
+constexpr int16_t kVideoUprightPictureH = DISPLAY_HEIGHT - kVideoUprightChromeH;  // 312
+
+// How a .lcv's frames are stored, and how the player is laid out. The two are
+// independent: a Rotated file played Upright (every file packed before this
+// existed) is rotated and scaled during decode. Values are the on-disk
+// encoding of header byte 40 and the NVS `videoOrient` setting — do not
+// renumber. See docs/lcv-format.md.
+enum class VideoOrientation : uint8_t {
+  Rotated = 0,  // pre-rotated 90 deg CW by the packer; turn the cube sideways
+  Upright = 1,  // same way up as Home; fit to width, letterboxed
+};
+
 // --- Identity / persistence ----------------------------------------------------
 constexpr const char* FIRMWARE_NAME = "Little Cube OS";
 constexpr const char* FIRMWARE_VERSION = "0.1.0";

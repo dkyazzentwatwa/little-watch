@@ -5,6 +5,7 @@
 #include <SD_MMC.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <WebSocketsClient.h>
 #include <esp_heap_caps.h>
 
 #include "../core/SystemState.h"
@@ -21,6 +22,16 @@ namespace {
 constexpr const char* kSttModel = "gpt-4o-mini-transcribe";  // fallback: whisper-1
 constexpr const char* kTtsModel = "gpt-4o-mini-tts";
 constexpr const char* kTtsVoice = "alloy";
+constexpr const char* kRealtimeModel = "gpt-realtime-2.1";
+constexpr const char* kRealtimeHost = "api.openai.com";
+constexpr uint16_t kRealtimePort = 443;
+// A TLS WebSocket connection can take longer than a regular API request after
+// Wi-Fi wakes or roams.  More importantly, wait for the server's
+// `session.created` event before configuring it: a completed WebSocket
+// handshake alone does not mean the Realtime session is ready for events.
+constexpr uint32_t kRealtimeConnectTimeoutMs = 30000;
+constexpr uint32_t kRealtimeResponseTimeoutMs = 90000;
+constexpr uint32_t kRealtimePcmRate = 24000;
 
 // Responses API (replaces Chat Completions). UNVERIFIED against a live spec —
 // these are constants precisely so a rejected request is a one-line fix and a
@@ -91,6 +102,80 @@ constexpr const char* kAssistantDir = "/littlecube/assistant";
 constexpr const char* kQueryPath = "/littlecube/assistant/query.wav";
 constexpr const char* kReplyPath = "/littlecube/assistant/reply.wav";
 constexpr const char* kBoundary = "----littlecube7f3a9c";
+
+// A compact encoder/decoder keeps the realtime path independent from the
+// WebSockets library's protected helper and lets chunks stay in PSRAM. Audio
+// payloads use only this alphabet, so no JSON escaping is required.
+constexpr char kBase64[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+size_t base64Encode(const uint8_t* input, size_t inputBytes, char* output) {
+  size_t src = 0;
+  size_t dst = 0;
+  while (src < inputBytes) {
+    const uint32_t a = input[src++];
+    const bool hasB = src < inputBytes;
+    const uint32_t b = hasB ? input[src++] : 0;
+    const bool hasC = src < inputBytes;
+    const uint32_t c = hasC ? input[src++] : 0;
+    output[dst++] = kBase64[(a >> 2) & 0x3F];
+    output[dst++] = kBase64[((a & 0x03) << 4) | (b >> 4)];
+    output[dst++] = hasB ? kBase64[((b & 0x0F) << 2) | (c >> 6)] : '=';
+    output[dst++] = hasC ? kBase64[c & 0x3F] : '=';
+  }
+  return dst;
+}
+
+int base64Value(char c) {
+  if (c >= 'A' && c <= 'Z') return c - 'A';
+  if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+  if (c >= '0' && c <= '9') return c - '0' + 52;
+  if (c == '+') return 62;
+  if (c == '/') return 63;
+  return -1;
+}
+
+size_t base64Decode(const char* input, uint8_t* output, size_t outputCap) {
+  size_t dst = 0;
+  int bits = 0;
+  uint32_t acc = 0;
+  for (const char* p = input; p != nullptr && *p != '\0'; ++p) {
+    if (*p == '=') break;
+    const int value = base64Value(*p);
+    if (value < 0) continue;
+    acc = (acc << 6) | static_cast<uint32_t>(value);
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      if (dst == outputCap) return 0;
+      output[dst++] = static_cast<uint8_t>((acc >> bits) & 0xFF);
+    }
+  }
+  return dst;
+}
+
+void writeLe32(fs::File& file, uint32_t value) {
+  uint8_t bytes[4] = {static_cast<uint8_t>(value), static_cast<uint8_t>(value >> 8),
+                      static_cast<uint8_t>(value >> 16), static_cast<uint8_t>(value >> 24)};
+  file.write(bytes, sizeof(bytes));
+}
+
+bool writePcmWavHeader(fs::File& file, uint32_t rate, uint32_t dataBytes) {
+  if (!file.seek(0)) return false;
+  file.write(reinterpret_cast<const uint8_t*>("RIFF"), 4);
+  writeLe32(file, 36 + dataBytes);
+  file.write(reinterpret_cast<const uint8_t*>("WAVEfmt "), 8);
+  writeLe32(file, 16);
+  const uint8_t format[] = {1, 0, 1, 0};  // PCM, mono
+  file.write(format, sizeof(format));
+  writeLe32(file, rate);
+  writeLe32(file, rate * 2);
+  const uint8_t alignment[] = {2, 0, 16, 0};
+  file.write(alignment, sizeof(alignment));
+  file.write(reinterpret_cast<const uint8_t*>("data"), 4);
+  writeLe32(file, dataBytes);
+  return file.position() == 44;
+}
 
 // Shared HTTPS setup (podcast precedent): no on-device cert store; HTTP/1.0
 // only when a raw body stream is read back (avoids chunked framing).
@@ -183,6 +268,14 @@ void snipBody(HTTPClient& http, char* out, size_t cap) {
 // internal RAM (69 KB free at boot -> 52 -> 49 across takes in the field,
 // then esp-aes alloc failures).
 void assistantWorkerBody(AssistantService* self) {
+  // Transcribe-only is deliberately kept on the file API even when Realtime
+  // is selected: that command promises a file transcription, not an assistant
+  // reply. Voice and text exchanges use the selected backend.
+  if (self->settings_->assistantBackend() == AssistantBackend::Realtime &&
+      self->mode_ != AssistantService::Mode::TranscribeOnly) {
+    self->realtimeWorkerBody();
+    return;
+  }
   self->workerFailed_ = false;
   const String key = self->settings_->openaiKey();
 
@@ -533,6 +626,300 @@ void assistantWorkerTask(void* arg) {
   assistantWorkerBody(self);  // returning unwinds — every local is destroyed
   xSemaphoreGive(self->done_);  // release barrier — nothing may touch self after
   vTaskDelete(nullptr);
+}
+
+// ---------------------------------------------------------------------------
+
+void AssistantService::realtimeWorkerBody() {
+  workerFailed_ = false;
+  workerPhase_ = static_cast<uint8_t>(State::Thinking);
+  answer_[0] = '\0';
+  if (mode_ == Mode::Text) {
+    strncpy(transcript_, textQuery_, sizeof(transcript_) - 1);
+    transcript_[sizeof(transcript_) - 1] = '\0';
+  } else {
+    transcript_[0] = '\0';
+  }
+
+  // Realtime output is raw 24 kHz PCM. Keep it behind the same atomic WAV
+  // handoff as classic TTS, so the loop task remains the sole owner of I2S.
+  const String partialPath = AtomicFile::partialPath(kReplyPath);
+  SD_MMC.remove(partialPath);
+  fs::File reply = SD_MMC.open(partialPath, FILE_WRITE);
+  if (!reply || !writePcmWavHeader(reply, kRealtimePcmRate, 0)) {
+    if (reply) reply.close();
+    snprintf(lastError_, sizeof(lastError_), "realtime reply file failed");
+    workerFailed_ = true;
+    return;
+  }
+
+  // This board captures 16 kHz PCM, while the current Realtime PCM schema
+  // uses 24 kHz. Expanding each 16-bit pair to a, a, b preserves duration and
+  // pitch without allocating the whole take; interpolation can replace this
+  // compact first pass if listening tests reveal an audible need.
+  constexpr size_t kInputBytes = 4096;
+  constexpr size_t kUpsampledBytes = kInputBytes * 3 / 2;
+  constexpr size_t kEventBytes = 48 + ((kUpsampledBytes + 2) / 3) * 4 + 4;
+  // The WebSocket dependency accepts up to 32 KB base64 JSON frames. Reserve
+  // enough PSRAM for their decoded PCM payload rather than discarding a valid
+  // first audio delta that exceeds the old 12 KB scratch buffer.
+  constexpr size_t kDecodeBytes = 24 * 1024;
+  uint8_t* input = static_cast<uint8_t*>(
+      heap_caps_malloc(kInputBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  uint8_t* upsampled = static_cast<uint8_t*>(
+      heap_caps_malloc(kUpsampledBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  char* event = static_cast<char*>(
+      heap_caps_malloc(kEventBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  uint8_t* decoded = static_cast<uint8_t*>(
+      heap_caps_malloc(kDecodeBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (input == nullptr || upsampled == nullptr || event == nullptr || decoded == nullptr) {
+    if (input) heap_caps_free(input);
+    if (upsampled) heap_caps_free(upsampled);
+    if (event) heap_caps_free(event);
+    if (decoded) heap_caps_free(decoded);
+    reply.close();
+    SD_MMC.remove(partialPath);
+    snprintf(lastError_, sizeof(lastError_), "realtime out of memory");
+    workerFailed_ = true;
+    return;
+  }
+
+  WebSocketsClient socket;
+  bool connected = false;
+  bool sessionCreated = false;
+  bool configured = false;
+  bool responseDone = false;
+  bool replyWriteFailed = false;
+  bool closingSocket = false;
+  uint32_t replyBytes = 0;
+
+  socket.onEvent([&](WStype_t type, uint8_t* payload, size_t length) {
+    if (type == WStype_CONNECTED) {
+      connected = true;
+      Serial.println("[assistant] realtime WebSocket connected");
+      return;
+    }
+    if (type == WStype_DISCONNECTED || type == WStype_ERROR) {
+      if (closingSocket) return;
+      if (!workerFailed_) {
+        const size_t copy = min(length, sizeof(lastError_) - 20);
+        snprintf(lastError_, sizeof(lastError_), "realtime socket %s: %.*s",
+                 type == WStype_DISCONNECTED ? "closed" : "error", static_cast<int>(copy),
+                 payload != nullptr ? reinterpret_cast<const char*>(payload) : "no detail");
+      }
+      workerFailed_ = true;
+      responseDone = true;
+      return;
+    }
+    if (type != WStype_TEXT || payload == nullptr || length == 0) {
+      return;
+    }
+    JsonDocument filter;
+    filter["type"] = true;
+    filter["delta"] = true;
+    filter["transcript"] = true;
+    filter["error"]["message"] = true;
+    JsonDocument message;
+    if (deserializeJson(message, payload, length, DeserializationOption::Filter(filter)) !=
+        DeserializationError::Ok) {
+      return;  // ignore unknown/oversized observability events
+    }
+    const char* eventType = message["type"];
+    if (eventType == nullptr) return;
+    Serial.printf("[assistant] realtime event: %s\n", eventType);
+    if (strcmp(eventType, "session.created") == 0) {
+      sessionCreated = true;
+    } else if (strcmp(eventType, "session.updated") == 0) {
+      configured = true;
+    } else if (strcmp(eventType, "error") == 0) {
+      const char* detail = message["error"]["message"];
+      snprintf(lastError_, sizeof(lastError_), "realtime: %s", detail != nullptr ? detail : "error");
+      Serial.printf("[assistant] realtime server error: %s\n",
+                    detail != nullptr ? detail : "no message");
+      workerFailed_ = true;
+      responseDone = true;
+    } else if (strcmp(eventType, "conversation.item.input_audio_transcription.completed") == 0) {
+      const char* text = message["transcript"];
+      if (text != nullptr) {
+        strncpy(transcript_, text, sizeof(transcript_) - 1);
+        transcript_[sizeof(transcript_) - 1] = '\0';
+      }
+    } else if (strcmp(eventType, "response.output_audio_transcript.delta") == 0) {
+      const char* delta = message["delta"];
+      if (delta != nullptr) {
+        const size_t used = strlen(answer_);
+        if (used + 1 < sizeof(answer_)) {
+          strncat(answer_, delta, sizeof(answer_) - used - 1);
+        }
+      }
+    } else if (strcmp(eventType, "response.output_audio.delta") == 0) {
+      const char* delta = message["delta"];
+      if (delta == nullptr || replyWriteFailed) return;
+      const size_t bytes = base64Decode(delta, decoded, kDecodeBytes);
+      if (bytes == 0 || reply.write(decoded, bytes) != bytes) {
+        replyWriteFailed = true;
+      } else {
+        replyBytes += bytes;
+      }
+    } else if (strcmp(eventType, "response.done") == 0) {
+      responseDone = true;
+    }
+  });
+
+  // This matches the existing assistant's documented no-cert-store policy.
+  // The WebSockets library calls setInsecure() when no CA bundle is supplied.
+  // WebSocketsClient appends the terminating CRLF itself. Supplying one here
+  // ended the handshake headers early and left its User-Agent outside them.
+  const String headers = String("Authorization: Bearer ") + settings_->openaiKey();
+  socket.setExtraHeaders(headers.c_str());
+  socket.setReconnectInterval(5000);
+  socket.beginSSL(kRealtimeHost, kRealtimePort,
+                  String("/v1/realtime?model=") + kRealtimeModel, String(""), String(""));
+
+  const uint32_t connectStarted = millis();
+  while (!connected && millis() - connectStarted < kRealtimeConnectTimeoutMs) {
+    socket.loop();
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  if (!connected) {
+    if (!workerFailed_) snprintf(lastError_, sizeof(lastError_), "realtime WebSocket timeout");
+    workerFailed_ = true;
+  }
+
+  // The endpoint creates a Realtime session after the WebSocket upgrade.
+  // Do not race session.update ahead of that lifecycle event.
+  const uint32_t sessionStarted = millis();
+  while (!workerFailed_ && !sessionCreated &&
+         millis() - sessionStarted < kRealtimeConnectTimeoutMs) {
+    socket.loop();
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  if (!workerFailed_ && !sessionCreated) {
+    snprintf(lastError_, sizeof(lastError_), "realtime session creation timeout");
+    workerFailed_ = true;
+  }
+
+  const char* sessionUpdate =
+      "{\"type\":\"session.update\",\"session\":{\"type\":\"realtime\","
+      "\"output_modalities\":[\"audio\"],\"audio\":{\"input\":{\"format\":{"
+      "\"type\":\"audio/pcm\",\"rate\":24000},\"turn_detection\":null},"
+      "\"output\":{\"format\":{\"type\":\"audio/pcm\",\"rate\":24000},\"voice\":\"alloy\"}},"
+      "\"instructions\":\"You are a concise voice assistant on an ESP32 device. "
+      "Use plain spoken language and keep answers to one to three short sentences.\"}}";
+  if (!workerFailed_ && !socket.sendTXT(sessionUpdate)) {
+    snprintf(lastError_, sizeof(lastError_), "realtime session update failed");
+    workerFailed_ = true;
+  }
+  const uint32_t configureStarted = millis();
+  while (!workerFailed_ && !configured && millis() - configureStarted < kRealtimeConnectTimeoutMs) {
+    socket.loop();
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  if (!workerFailed_ && !configured) {
+    snprintf(lastError_, sizeof(lastError_), "realtime session timeout");
+    workerFailed_ = true;
+  }
+
+  if (!workerFailed_ && mode_ == Mode::Text) {
+    JsonDocument textEvent;
+    textEvent["type"] = "conversation.item.create";
+    JsonObject item = textEvent["item"].to<JsonObject>();
+    item["type"] = "message";
+    item["role"] = "user";
+    item["content"].to<JsonArray>().add<JsonObject>()["type"] = "input_text";
+    item["content"][0]["text"] = textQuery_;
+    String serialized;
+    serializeJson(textEvent, serialized);
+    if (!socket.sendTXT(serialized) || !socket.sendTXT("{\"type\":\"response.create\"}")) {
+      snprintf(lastError_, sizeof(lastError_), "realtime text send failed");
+      workerFailed_ = true;
+    }
+  } else if (!workerFailed_) {
+    fs::File source = SD_MMC.open(kQueryPath, FILE_READ);
+    if (!source || source.size() <= 44 || !source.seek(44)) {
+      if (source) source.close();
+      snprintf(lastError_, sizeof(lastError_), "no captured audio");
+      workerFailed_ = true;
+    } else {
+      while (!workerFailed_ && source.available() > 0) {
+        size_t sourceBytes = source.read(input, kInputBytes);
+        sourceBytes &= ~static_cast<size_t>(3);  // whole 16-bit sample pairs only
+        if (sourceBytes == 0) break;
+        size_t outputBytes = 0;
+        for (size_t i = 0; i < sourceBytes; i += 4) {
+          memcpy(upsampled + outputBytes, input + i, 2);
+          memcpy(upsampled + outputBytes + 2, input + i, 2);
+          memcpy(upsampled + outputBytes + 4, input + i + 2, 2);
+          outputBytes += 6;
+        }
+        static constexpr char kPrefix[] = "{\"type\":\"input_audio_buffer.append\",\"audio\":\"";
+        memcpy(event, kPrefix, sizeof(kPrefix) - 1);
+        const size_t encoded = base64Encode(upsampled, outputBytes, event + sizeof(kPrefix) - 1);
+        const size_t eventLength = sizeof(kPrefix) - 1 + encoded;
+        event[eventLength] = '\"';
+        event[eventLength + 1] = '}';
+        event[eventLength + 2] = '\0';
+        if (!socket.sendTXT(event, eventLength + 2)) {
+          snprintf(lastError_, sizeof(lastError_), "realtime audio send failed");
+          workerFailed_ = true;
+          break;
+        }
+        socket.loop();
+        vTaskDelay(pdMS_TO_TICKS(1));
+      }
+      source.close();
+      if (!workerFailed_ &&
+          (!socket.sendTXT("{\"type\":\"input_audio_buffer.commit\"}") ||
+           !socket.sendTXT("{\"type\":\"response.create\"}"))) {
+        snprintf(lastError_, sizeof(lastError_), "realtime response start failed");
+        workerFailed_ = true;
+      }
+    }
+  }
+
+  const uint32_t responseStarted = millis();
+  while (!workerFailed_ && !responseDone &&
+         millis() - responseStarted < kRealtimeResponseTimeoutMs) {
+    socket.loop();
+    vTaskDelay(pdMS_TO_TICKS(5));
+  }
+  if (!workerFailed_ && !responseDone) {
+    snprintf(lastError_, sizeof(lastError_), "realtime response timeout");
+    workerFailed_ = true;
+  }
+  closingSocket = true;
+  socket.disconnect();
+
+  if (replyWriteFailed || replyBytes == 0) {
+    if (!workerFailed_) snprintf(lastError_, sizeof(lastError_), "realtime audio write failed");
+    workerFailed_ = true;
+  }
+  if (!workerFailed_ && answer_[0] == '\0') {
+    snprintf(lastError_, sizeof(lastError_), "realtime reply had no transcript");
+    workerFailed_ = true;
+  }
+  if (transcript_[0] == '\0') {
+    strncpy(transcript_, "voice request", sizeof(transcript_) - 1);
+    transcript_[sizeof(transcript_) - 1] = '\0';
+  }
+  if (!workerFailed_ && !writePcmWavHeader(reply, kRealtimePcmRate, replyBytes)) {
+    snprintf(lastError_, sizeof(lastError_), "realtime WAV finalize failed");
+    workerFailed_ = true;
+  }
+  reply.close();
+  if (!workerFailed_) {
+    if (!AtomicFile::finalizePartial(SD_MMC, kReplyPath)) {
+      snprintf(lastError_, sizeof(lastError_), "realtime SD finalize failed");
+      workerFailed_ = true;
+    }
+  }
+  if (workerFailed_) {
+    SD_MMC.remove(partialPath);
+  }
+  heap_caps_free(input);
+  heap_caps_free(upsampled);
+  heap_caps_free(event);
+  heap_caps_free(decoded);
 }
 
 // ---------------------------------------------------------------------------

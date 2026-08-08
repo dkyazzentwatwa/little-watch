@@ -16,11 +16,20 @@ CHUNK_VIDEO = 1
 CHUNK_AUDIO = 2
 MAX_FRAME_BYTES = 96 * 1024
 
-# The panel's picture area, left of the player chrome strip (see
-# little-cube-os/src/board_config.h, "video player layout"): rotated frames
-# stored on disk must fit within 310 wide x 448 tall.
-MAX_STORED_WIDTH = 310
-MAX_STORED_HEIGHT = 448
+# Header byte 40, claimed from the reserved block. Zero is what every packer
+# before this wrote, and it means Rotated — so old files stay correct with no
+# version bump. See docs/lcv-format.md.
+ORIENT_ROTATED = 0
+ORIENT_UPRIGHT = 1
+
+# The picture box each orientation is packed for (see
+# little-cube-os/src/board_config.h, "video player layout"). Rotated frames sit
+# left of the vertical chrome strip; upright frames sit above the horizontal
+# one, which is taller because it needs three rows.
+MAX_STORED = {
+    ORIENT_ROTATED: (310, 448),
+    ORIENT_UPRIGHT: (368, 312),
+}
 
 # JPEG SOF (start-of-frame) marker family: baseline (C0), extended
 # sequential (C1), progressive (C2). ffmpeg's mjpeg encoder emits C0.
@@ -117,9 +126,11 @@ def mux(args):
         sys.exit(f"error: --width {args.width} does not match parsed frame width {width}")
     if args.height is not None and args.height != height:
         sys.exit(f"error: --height {args.height} does not match parsed frame height {height}")
-    if width > MAX_STORED_WIDTH or height > MAX_STORED_HEIGHT:
-        sys.exit(f"error: frame is {width}x{height}, exceeds the panel's picture area "
-                 f"({MAX_STORED_WIDTH}x{MAX_STORED_HEIGHT} max) — check the packer's scale filter")
+    orientation = ORIENT_UPRIGHT if args.orientation == "upright" else ORIENT_ROTATED
+    max_w, max_h = MAX_STORED[orientation]
+    if width > max_w or height > max_h:
+        sys.exit(f"error: frame is {width}x{height}, exceeds the {args.orientation} picture area "
+                 f"({max_w}x{max_h} max) — check the packer's scale filter")
 
     spf = args.rate // args.fps          # samples per frame group
     bpf = spf * 2                        # bytes per frame group (mono s16)
@@ -136,11 +147,11 @@ def mux(args):
         out += struct.pack("<I", off)
 
     header = struct.pack(
-        "<4sHHHHHHIIIIII24x",
+        "<4sHHHHHHIIIIIIB23x",
         MAGIC, VERSION, HEADER_BYTES,
         width, height, args.fps, 1,
         args.rate, len(frames), len(frames) * 1000 // args.fps,
-        index_offset, HEADER_BYTES, max_frame)
+        index_offset, HEADER_BYTES, max_frame, orientation)
     assert len(header) == HEADER_BYTES
     out[:HEADER_BYTES] = header
 
@@ -151,7 +162,7 @@ def mux(args):
         os.replace(tmp_path, args.output)
     except OSError as e:
         sys.exit(f"error: {e}")
-    print(f"wrote {args.output}: {width}x{height}, {len(frames)} frames, "
+    print(f"wrote {args.output}: {width}x{height} {args.orientation}, {len(frames)} frames, "
           f"{len(frames) * 1000 // args.fps} ms, maxFrame {max_frame} B, "
           f"{len(out)} B total")
 
@@ -166,8 +177,10 @@ def inspect(args):
         sys.exit("error: file shorter than header")
     (magic, version, header_bytes, width, height, fps, channels, rate,
      frame_count, duration_ms, index_offset, data_offset,
-     max_frame) = struct.unpack("<4sHHHHHHIIIIII24x", data[:HEADER_BYTES])
-    print(f"magic={magic} version={version} {width}x{height} @{fps}fps "
+     max_frame, orientation) = struct.unpack("<4sHHHHHHIIIIIIB23x", data[:HEADER_BYTES])
+    orient_name = {ORIENT_ROTATED: "rotated", ORIENT_UPRIGHT: "upright"}.get(
+        orientation, f"unknown({orientation})")
+    print(f"magic={magic} version={version} {width}x{height} {orient_name} @{fps}fps "
           f"audio={rate}Hz ch={channels}")
     print(f"frames={frame_count} duration={duration_ms}ms "
           f"maxFrameBytes={max_frame} dataOffset={data_offset} "
@@ -177,7 +190,10 @@ def inspect(args):
           and frame_count > 0 and data_offset >= HEADER_BYTES
           and index_offset > data_offset
           and index_offset + 4 * frame_count <= len(data)
-          and 0 < max_frame <= MAX_FRAME_BYTES)
+          and 0 < max_frame <= MAX_FRAME_BYTES
+          and orientation in MAX_STORED
+          and width <= MAX_STORED[orientation][0]
+          and height <= MAX_STORED[orientation][1])
     # Every index entry must point at a video chunk header.
     if ok:
         for n in range(frame_count):
@@ -207,6 +223,9 @@ def main():
                     help="optional: must match the width parsed from the first JPEG frame")
     m.add_argument("--height", type=int, default=None,
                     help="optional: must match the height parsed from the first JPEG frame")
+    m.add_argument("--orientation", choices=("upright", "rotated"), default="upright",
+                    help="how the frames are stored; must match the ffmpeg filter chain that "
+                         "produced them. Default upright, matching the firmware default.")
     m.add_argument("-o", "--output", required=True)
     m.set_defaults(func=mux)
     i = sub.add_parser("inspect")

@@ -15,6 +15,7 @@
 class AudioAdapter;
 class DisplayAdapter;
 class SdStorage;
+class SettingsService;
 
 // Playback engine. One reader task streams SD -> PSRAM frame ring + I2S
 // audio; the loop task decodes JPEG frames chasing the audio clock.
@@ -48,7 +49,24 @@ class VideoPlayer {
   static constexpr int16_t kChromeStripPx = kVideoChromeStripPx;
   static constexpr int16_t kPictureAreaW = kVideoPictureAreaW;  // 310
 
-  void begin(AudioAdapter* audio, DisplayAdapter* display, SdStorage* storage);
+  // Where the picture lands on the canvas, and how it gets there. Resolved
+  // once per playback in play(), from the file's stored orientation and the
+  // user's setting; VideoApp reads it to blank the letterbox margins and to
+  // place its chrome. `rotate` is the compatibility path: the two disagree,
+  // so every frame is turned 90 deg (and scaled to fit) during decode.
+  struct PictureLayout {
+    int16_t x = 0;
+    int16_t y = 0;
+    int16_t w = 0;
+    int16_t h = 0;
+    bool rotate = false;
+  };
+
+  // `settings` supplies the orientation, sampled at each play() so a change
+  // mid-video lands on the next start rather than re-laying-out under a
+  // running decoder. May be null (serial-only builds); Rotated is assumed.
+  void begin(AudioAdapter* audio, DisplayAdapter* display, SdStorage* storage,
+             SettingsService* settings);
 
   // Starts playback (loop task only). Refuses — writing a short reason —
   // when already playing, recording is active, the path fails sanitizing,
@@ -77,6 +95,18 @@ class VideoPlayer {
   uint32_t durationMs() const { return header_.durationMs; }
   const char* path() const { return path_; }
   const LcvHeader& header() const { return header_; }
+  const PictureLayout& pictureLayout() const { return layout_; }
+  VideoOrientation activeOrientation() const { return activeOrientation_; }
+
+  // Picture box for a mode: what the frame must fit inside once the chrome
+  // strip is taken out. Static so VideoApp can lay out chrome against the
+  // same numbers without a live playback.
+  static int16_t pictureBoxW(VideoOrientation mode) {
+    return mode == VideoOrientation::Upright ? DISPLAY_WIDTH : kVideoPictureAreaW;
+  }
+  static int16_t pictureBoxH(VideoOrientation mode) {
+    return mode == VideoOrientation::Upright ? kVideoUprightPictureH : DISPLAY_HEIGHT;
+  }
 
   // The app owns the screen; decode only happens while it says so. When
   // false, frames are still popped and dropped on the clock so audio and
@@ -95,6 +125,7 @@ class VideoPlayer {
 
   friend void videoReaderTask(void* arg);
 
+  void resolveLayout();  // fills layout_/activeOrientation_ from header_ + settings
   bool startTask(uint32_t startFrame);
   void finishPlayback();
   void consumeFrames();
@@ -115,6 +146,10 @@ class VideoPlayer {
   AudioAdapter* audio_ = nullptr;
   DisplayAdapter* display_ = nullptr;
   SdStorage* storage_ = nullptr;
+  SettingsService* settings_ = nullptr;
+
+  VideoOrientation activeOrientation_ = VideoOrientation::Rotated;
+  PictureLayout layout_;
 
   State state_ = State::Idle;  // loop task only
   SemaphoreHandle_t done_ = nullptr;
@@ -131,6 +166,12 @@ class VideoPlayer {
   volatile uint8_t tail_ = 0;
   int16_t* audioBuf_ = nullptr;  // one frame group of samples, PSRAM
   uint32_t audioBufBytes_ = 0;
+  // Nearest-neighbour source coordinate per destination pixel, one table per
+  // axis (layout_.w and layout_.h entries). Internal RAM, allocated only when
+  // layout_.rotate — they exist purely to keep integer division out of the
+  // blit's inner loop. See allocBuffers().
+  int16_t* rotMapDx_ = nullptr;
+  int16_t* rotMapDy_ = nullptr;
 
   volatile bool stopReq_ = false;
   volatile bool taskEof_ = false;
