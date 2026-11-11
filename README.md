@@ -5,14 +5,12 @@ Arduino/C++ firmware for the Waveshare ESP32-S3-Touch-AMOLED-1.8.
 
 <table>
   <tr>
-    <td align="center" width="33%"><img src="docs/images/themes.jpg" alt="The Themes screen on the cube, with Amber CRT selected and ten palettes listed" width="100%"></td>
-    <td align="center" width="33%"><img src="docs/images/news.jpg" alt="The News reader showing a BBC headline in amber text, article 4 of 20" width="100%"></td>
-    <td align="center" width="33%"><img src="docs/images/weather.jpg" alt="The Weather screen styled as a terminal: 'wx --now', Malibu, 78 degrees, clear" width="100%"></td>
+    <td align="center" width="50%"><img src="docs/images/clock.jpg" alt="The terminal-style clock face on the cube: 'cube:~$ date', 16:05, Sunday, November 10" width="100%"><br><b>Clock</b><br>terminal-style faces, tap for the next one</td>
+    <td align="center" width="50%"><img src="docs/images/weather.jpg" alt="The Weather screen styled as a terminal: 'wx --now', Malibu, 78 degrees, clear" width="100%"><br><b>Weather</b><br>current, high/low, rain chance</td>
   </tr>
   <tr>
-    <td align="center"><b>10 themes</b><br>five dark, five light</td>
-    <td align="center"><b>News</b><br>BBC headlines, paged for a tiny screen</td>
-    <td align="center"><b>Weather</b><br>current, high/low, rain chance</td>
+    <td align="center"><img src="docs/images/news.jpg" alt="The News reader showing a BBC headline in amber text, article 4 of 20" width="100%"><br><b>News</b><br>BBC headlines, paged for a tiny screen</td>
+    <td align="center"><img src="docs/images/themes.jpg" alt="The Themes screen on the cube, with Amber CRT selected and ten palettes listed" width="100%"><br><b>10 themes</b><br>five dark, five light</td>
   </tr>
 </table>
 
@@ -133,7 +131,7 @@ assistant key                        # store an OpenAI API key (assistant)
 assistant ask what is the tallest mountain
 ```
 
-The weather, news and themes screens in the photos above came from exactly
+The clock, weather, news and themes screens in the photos above came from exactly
 this setup. See [Serial commands](#serial-commands) for the rest.
 
 ## Controls
