@@ -49,9 +49,9 @@ family verb arg arg ...
 ## Families
 
 `help` with no argument prints the index. `help <topic>` prints the full
-listing for `notes`, `files`, `storage`, `wifi`, `recordings`, `audio`, `radio`,
-`calendar`, `contacts` and `settings`. Other topics report that no detailed
-help exists yet.
+listing for `notes`, `files`, `storage`, `wifi`, `recordings`, `assistant`,
+`audio`, `radio`, `calendar`, `contacts`, `settings`, `news`, `podcast` and
+`video`. Other topics report that no detailed help exists yet.
 
 ### general
 
@@ -66,9 +66,11 @@ help exists yet.
 | `back` | router back step; prints the app it landed on |
 | `input debug <on\|off>` | log raw touch/gesture decisions from `InputAdapter` |
 
-`open` accepts: Home, Today, Clock, Weather, News, Calendar, Notes, Reader,
-Recorder, Audio, Files, Contacts, Calculator, Settings. An unknown name prints the
-full list rather than a generic error.
+`open` accepts all 16 apps: Home, Today, Clock, Weather, Calendar, Notes,
+Recorder, Audio, Files, Contacts, Calculator, Settings, Reader, News,
+Assistant and Video. An unknown name prints an error with a list of app names
+(that error text currently omits Reader, News, Assistant and Video, though
+`open` accepts them).
 
 `open` and `back` drive the same router the touchscreen does, so
 `onOpen`/`onClose` and `onPause`/`onResume` fire exactly as they would from a
@@ -288,6 +290,11 @@ Ids are 1-based positions in the most recent `list` output of that family.
 | Command | Effect |
 |---|---|
 | `recordings list` | id, name, size in KB, estimated duration |
+| `recordings start` / `recordings stop` | run a take from serial; `stop` finalizes the file over the next frames |
+| `recordings gain [0-7]` | mic ADC gain in 6 dB steps (0 = 0 dB .. 7 = 42 dB); refused while recording |
+| `recordings normalize [on\|off]` | lift takes to -3 dBFS before saving |
+| `recordings gate [on\|off]` | ease pauses -12 dB below the take's noise floor (hiss relief) |
+| `recordings quiet [on\|off]` | pause PMU/RTC I2C traffic during takes |
 | `recordings info <id>` | path + format (`WAV mono 16-bit @ 16000 Hz`) |
 | `recordings rename <id> "<name>"` | rename inside `/littlecube/recordings`; `.wav` appended if missing; no `/` allowed |
 | `recordings delete <id> confirm` | delete; `confirm` required |
@@ -319,9 +326,50 @@ gone?)` while a recording is in progress.
 `RecorderService::list()`. Music and podcast episodes (MP3/AAC/FLAC/WAV) play
 through the **Audio app on the device** (its Music and Podcasts screens,
 decoded by ESP8266Audio) — there is no serial verb to start them. Fetch podcast
-episodes onto the card with the `podcast` serial family (`help podcast`); copy
-music into `/littlecube/music` yourself. Radio (internet streaming) is not
-implemented.
+episodes onto the card with the `podcast` serial family (see below); copy
+music into `/littlecube/music` yourself. Live internet radio has its own
+`radio` family (above).
+
+### assistant
+
+Voice/text assistant over Wi-Fi. It needs an OpenAI API key stored on the
+cube; the key is never printed. State, key presence and conversation depth are
+visible with `assistant status`.
+
+| Command | Effect |
+|---|---|
+| `assistant status` | state, backend, key set/missing, online, memory depth, last error |
+| `assistant key` | store the OpenAI API key; the **next line** you send is the key (blank line cancels) |
+| `assistant mode [api\|realtime]` | show or select the voice backend (`api` = speech-to-text + Responses + text-to-speech; `realtime` = speech-to-speech) |
+| `assistant ask <question>` | text question, spoken answer (the whole remainder of the line is the question) |
+| `assistant voice` | start listening; run it again to send the spoken question |
+| `assistant transcribe </littlecube/.../file.wav>` | speech-to-text only, on a WAV (pipeline test) |
+| `assistant reset` | clear conversation memory |
+
+### news
+
+BBC News headlines, fetched over Wi-Fi and cached. Ids are positions in the
+last `news list`.
+
+| Command | Effect |
+|---|---|
+| `news list` | fetched/cached headlines with ids |
+| `news show <n>` | one headline: title, summary, link |
+| `news refresh` | fetch the latest headlines (needs Wi-Fi); reports `already fetching` if a fetch is running |
+
+### podcast
+
+Manual RSS feeds. Episodes download to `/littlecube/podcasts/downloads` and
+play from the Audio app on the device.
+
+| Command | Effect |
+|---|---|
+| `podcast feeds` | list subscribed feeds (ids) |
+| `podcast add <rss-url>` | subscribe (http/https URL required) |
+| `podcast remove <id>` | unsubscribe |
+| `podcast fetch [id\|url]` | download the latest episode (default feed 0); poll with `podcast status` |
+| `podcast status` | idle / fetching / downloading % / done / failed |
+| `podcast list` | downloaded episodes on the card |
 
 ### calendar
 
